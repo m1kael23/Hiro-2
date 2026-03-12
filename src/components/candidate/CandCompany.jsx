@@ -103,7 +103,7 @@ export default function CandCompany() {
   return (
     <div className="view">
     <div className="scroll">
-      <div className="review-shell" style={{ maxWidth: 820 }}>
+      <div className="review-shell" style={{ maxWidth: 820, width: '100%' }}>
 
         {/* Cover */}
         <div style={{ height: 140, borderRadius: 'var(--rx) var(--rx) 0 0', background: 'linear-gradient(135deg,#1a0535,#0d1535,#001a35)', border: '1px solid var(--border2)', borderBottom: 'none', position: 'relative', overflow: 'hidden' }}>
@@ -120,25 +120,28 @@ export default function CandCompany() {
 
         {/* Identity strip */}
         <div style={{ padding: '0 24px 20px', border: '1px solid var(--border2)', borderTop: 'none', borderRadius: '0 0 var(--rx) var(--rx)', background: 'var(--surface)', marginBottom: 18 }}>
-          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, marginTop: -28, marginBottom: 16 }}>
+          {/* FIX: added flexWrap, minWidth:0 to prevent banner deformation */}
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, marginTop: -28, marginBottom: 16, flexWrap: 'wrap', minWidth: 0 }}>
             <div style={{ width: 68, height: 68, borderRadius: 16, background: '#0d1020', border: '3px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: e.logo ? 0 : 36, flexShrink: 0, overflow: 'hidden' }}>
               {e.logo
                 ? <img src={e.logo} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 : e.emoji}
             </div>
-            <div style={{ paddingBottom: 6, flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 3 }}>
-                <div style={{ fontFamily: "'Manrope',sans-serif", fontSize: 22, fontWeight: 800, color: '#fff' }}>{e.name}</div>
+            {/* FIX: added minWidth:0 so this flex child can shrink properly */}
+            <div style={{ paddingBottom: 6, flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 3, minWidth: 0 }}>
+                <div style={{ fontFamily: "'Manrope',sans-serif", fontSize: 22, fontWeight: 800, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.name}</div>
                 <span className="verified-badge">✓ Verified employer</span>
                 {e.hiroScore && <span className="company-badge" style={{ background: 'rgba(245,158,11,.12)', border: '1px solid rgba(245,158,11,.25)', color: 'var(--amber)' }}>Hiro {e.hiroScore}/10</span>}
               </div>
-              <div style={{ fontSize: 13, color: 'var(--text2)' }}>
+              <div style={{ fontSize: 13, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {e.tagline && <span>{e.tagline} · </span>}
                 {e.hq} · {e.stage} · {e.size} employees
                 {e.industry && <span> · {e.industry}</span>}
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8, flexShrink: 0, paddingBottom: 6 }}>
+            {/* FIX: added flexWrap so buttons don't overflow on narrow containers */}
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0, paddingBottom: 6, flexWrap: 'wrap' }}>
               {e.website && <a href={e.website} target="_blank" rel="noopener noreferrer" className="btn btn-ghost btn-sm">Website ↗</a>}
               <button className="btn btn-violet btn-sm" onClick={() => navigate('cand-jobs')}>Open roles ({jobs.length})</button>
             </div>
