@@ -5,16 +5,16 @@ import { db } from '../../firebase';
 import { doc, updateDoc, increment, getDoc } from 'firebase/firestore';
 
 const HORIZONS = [
-  { id: '3mo',  label: '3 months', desc: 'Employers see: "Open to conversations from June 2026" — no specific date, just a horizon signal.' },
-  { id: '6mo',  label: '6 months', desc: 'Employers see: "Open to conversations from September 2026" — no specific date, just a horizon signal.' },
+  { id: '3mo',  label: '3 months',  desc: 'Employers see: "Open to conversations from June 2026" — no specific date, just a horizon signal.' },
+  { id: '6mo',  label: '6 months',  desc: 'Employers see: "Open to conversations from September 2026" — no specific date, just a horizon signal.' },
   { id: '12mo', label: '12 months', desc: 'Employers see: "Open to conversations from March 2027" — no specific date, just a horizon signal.' },
-  { id: 'open', label: 'Open now', desc: 'Employers see: "Open to conversations now" — signals active interest.' },
+  { id: 'open', label: 'Open now',  desc: 'Employers see: "Open to conversations now" — signals active interest.' },
 ];
 
 const TIER_DEFS = [
-  { id: 'tier1', tier: 'Tier 1', label: 'Previous matches & employers', desc: 'Companies you\'ve previously matched with or worked at — they already know you.', countKey: null, color: 'teal' },
-  { id: 'tier2', tier: 'Tier 2', label: 'DNA + trajectory matches',     desc: 'Employers whose team DNA aligns with yours. Highly curated — typically 8–15 companies.',  countKey: null, color: 'violet' },
-  { id: 'tier3', tier: 'Tier 3', label: 'All Pro/Enterprise employers',  desc: 'Any employer on a paid Hiro plan — higher visibility, more outreach. Off by default.', countKey: null, color: 'amber' },
+  { id: 'tier1', tier: 'Tier 1', label: 'Previous matches & employers', desc: 'Companies you\'ve previously matched with or worked at — they already know you.', color: 'teal' },
+  { id: 'tier2', tier: 'Tier 2', label: 'DNA + trajectory matches',     desc: 'Employers whose team DNA aligns with yours. Highly curated — typically 8–15 companies.', color: 'violet' },
+  { id: 'tier3', tier: 'Tier 3', label: 'All Pro/Enterprise employers',  desc: 'Any employer on a paid Hiro plan — higher visibility, more outreach. Off by default.', color: 'amber' },
 ];
 
 const TIER_COLORS = {
@@ -26,9 +26,18 @@ const TIER_COLORS = {
 function horizonLabel(id) {
   const now = new Date();
   const add = { '3mo': 3, '6mo': 6, '12mo': 12, 'open': 0 }[id] || 0;
-  if (id === 'open') return 'Open to conversations now';
+  if (id === 'open') return 'Open now';
   const d = new Date(now.getFullYear(), now.getMonth() + add, 1);
   return d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+}
+
+function seniorityLabel(yrs) {
+  if (!yrs) return null;
+  if (yrs >= 10) return 'Principal';
+  if (yrs >= 7)  return 'Senior';
+  if (yrs >= 4)  return 'Mid-level';
+  if (yrs >= 1)  return 'Junior';
+  return null;
 }
 
 export default function CandBench() {
@@ -40,7 +49,6 @@ export default function CandBench() {
   const [tiers,    setTiers]    = useState({ tier1: true, tier2: true, tier3: false });
   const [saving,   setSaving]   = useState(false);
   const [stats,    setStats]    = useState({ views: 0, invites: 0 });
-  const [hydrated, setHydrated] = useState(false);
 
   // Hydrate from profile on mount
   useEffect(() => {
@@ -52,7 +60,6 @@ export default function CandBench() {
       views:   profile.bench_view_count_week   ?? 0,
       invites: profile.bench_invite_count_week ?? 0,
     });
-    setHydrated(true);
   }, [profile?.id]);
 
   async function toggleBench() {
@@ -75,11 +82,7 @@ export default function CandBench() {
   async function changeHorizon(id) {
     setHorizon(id);
     if (!joined || !profile?.id) return;
-    try {
-      await updateProfile({ bench_horizon: id });
-    } catch (err) {
-      console.error(err);
-    }
+    try { await updateProfile({ bench_horizon: id }); } catch (err) { console.error(err); }
   }
 
   async function toggleTier(id) {
@@ -95,16 +98,22 @@ export default function CandBench() {
     }
   }
 
-  // Derive anonymised preview values from live profile
-  const previewName     = profile?.full_name ? profile.full_name.split(' ')[0][0] + (profile.full_name.split(' ')[1]?.[0] ?? '') : 'JM';
-  const previewTitle    = profile?.job_title || 'Senior PM';
-  const previewYrs      = profile?.years_experience ? `${profile.years_experience}yr` : '';
-  const previewHorizon  = `Open from ${horizonLabel(horizon)}`;
-  const previewTags     = [
-    profile?.industry || 'Fintech',
-    ...(profile?.culture_tags?.slice(0, 2) ?? []),
-    ...(profile?.work_model ? [profile.work_model] : []),
-  ].slice(0, 4);
+  // ─ Preview card derivations ─────────────────────────────────────────────────────
+  const nameParts      = (profile?.full_name || 'Jordan Mitchell').split(' ');
+  const previewInitials = (nameParts[0]?.[0] ?? '') + (nameParts[1]?.[0] ?? '');
+  const previewTitle   = profile?.job_title || 'Senior Product Manager';
+  const yrs            = profile?.years_experience ?? null;
+  const previewYrs     = yrs ? `${yrs} yr${yrs !== 1 ? 's' : ''} exp` : null;
+  const seniority      = seniorityLabel(yrs);
+  const reliabilityScore = profile?.reliability_score ?? null;
+  // DNA match score — stored as dna_match_pct on profile (written by matching engine)
+  const dnaMatch       = profile?.dna_match_pct ?? null;
+  const previewTags    = [
+    profile?.industry        || 'Fintech',
+    ...(Array.isArray(profile?.culture_tags) ? profile.culture_tags.slice(0, 2) : []),
+    ...(profile?.work_model  ? [profile.work_model]  : []),
+    ...(profile?.dna_archetype ? [profile.dna_archetype] : []),
+  ].filter(Boolean).slice(0, 4);
 
   return (
     <div className="scroll">
@@ -120,12 +129,12 @@ export default function CandBench() {
         <div className="bench-hero" style={{ marginBottom: 16 }}>
           <div style={{ position: 'relative', zIndex: 1 }}>
 
-            {/* Stats — live from profile */}
+            {/* Stats */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: 20 }}>
               {[
-                [stats.views   > 0 ? String(stats.views)   : '—', 'var(--teal)',  'Bench views',      'this week'],
-                ['18h',                                             'var(--green)', 'Avg response time', 'from matched employers'],
-                [stats.invites > 0 ? String(stats.invites) : '—', '#a78bfa',     'Interview invites', 'sent this week'],
+                [stats.views   > 0 ? String(stats.views)   : '—', 'var(--teal)',  'Bench views',       'this week'],
+                ['18h',                                              'var(--green)', 'Avg response time',  'from matched employers'],
+                [stats.invites > 0 ? String(stats.invites) : '—', '#a78bfa',     'Interview invites',  'sent this week'],
               ].map(([v, c, l, sub]) => (
                 <div key={l} style={{ textAlign: 'center', ...(l !== 'Bench views' ? { borderLeft: '1px solid rgba(255,255,255,.07)', borderRight: l === 'Avg response time' ? '1px solid rgba(255,255,255,.07)' : 'none' } : {}) }}>
                   <div style={{ fontFamily: "'Manrope',sans-serif", fontSize: 32, fontWeight: 800, color: c, lineHeight: 1, marginBottom: 4 }}>{v}</div>
@@ -154,7 +163,7 @@ export default function CandBench() {
               ))}
             </div>
 
-            {/* Toggle CTA */}
+            {/* Join toggle */}
             <div
               className={`bench-toggle-pill${joined ? ' active' : ' inactive'}`}
               onClick={saving ? undefined : toggleBench}
@@ -226,28 +235,63 @@ export default function CandBench() {
             </div>
           </div>
 
-          {/* Live anonymised preview */}
+          {/* ── ENRICHED EMPLOYER PREVIEW CARD ── */}
           <div className="card2" style={{ marginBottom: 14, borderColor: 'rgba(13,148,136,.25)', background: 'linear-gradient(135deg,rgba(13,148,136,.06),rgba(56,189,248,.03))' }}>
             <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.14em', color: 'var(--teal)', marginBottom: 12 }}>What matched employers see</div>
-            <div style={{ background: 'rgba(255,255,255,.04)', border: '1px solid var(--border2)', borderRadius: 'var(--r)', padding: 14, marginBottom: 10 }}>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#0d9488,#0891b2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 800, color: '#fff', flexShrink: 0 }}>
-                  {previewName}
+            <div style={{ background: 'rgba(255,255,255,.04)', border: '1px solid var(--border2)', borderRadius: 'var(--r)', padding: 16 }}>
+
+              {/* Row 1: Avatar + identity */}
+              <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 12 }}>
+                <div style={{ width: 44, height: 44, borderRadius: 12, background: 'linear-gradient(135deg,#0d9488,#0891b2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 800, color: '#fff', flexShrink: 0 }}>
+                  {previewInitials}
                 </div>
-                <div>
-                  <div style={{ fontSize: 14, fontWeight: 700 }}>
-                    {previewName}. <span style={{ fontWeight: 400, color: 'var(--text3)', fontSize: 12 }}>({previewTitle}{previewYrs ? ` · ${previewYrs}` : ''})</span>
+                <div style={{ flex: 1 }}>
+                  {/* Line 1: Initials · seniority badge */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                    <span style={{ fontFamily: "'Manrope',sans-serif", fontSize: 15, fontWeight: 800 }}>{previewInitials}.</span>
+                    {seniority && (
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: 'rgba(56,189,248,.12)', border: '1px solid rgba(56,189,248,.25)', color: '#38bdf8' }}>{seniority}</span>
+                    )}
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 600 }}>On The Bench · {horizon === 'open' ? 'Open now' : `Open from ${horizonLabel(horizon)}`}</div>
+                  {/* Line 2: Title + experience */}
+                  <div style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 3 }}>
+                    {previewTitle}
+                    {previewYrs && <span style={{ color: 'var(--text3)', marginLeft: 6 }}>· {previewYrs}</span>}
+                  </div>
+                  {/* Line 3: Bench horizon */}
+                  <div style={{ fontSize: 12, color: 'var(--teal)', fontWeight: 600 }}>
+                    On The Bench · {horizon === 'open' ? 'Open now' : `Open from ${horizonLabel(horizon)}`}
+                  </div>
                 </div>
-                <span className="chip chip-p" style={{ marginLeft: 'auto', fontSize: 10 }}>🧬 DNA match</span>
+
+                {/* Right: DNA % + Reliability */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-end', flexShrink: 0 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 20, background: 'rgba(167,139,250,.12)', border: '1px solid rgba(167,139,250,.3)', color: '#a78bfa', whiteSpace: 'nowrap' }}>
+                    🧬 {dnaMatch !== null ? `${dnaMatch}% match` : 'DNA match'}
+                  </span>
+                  {reliabilityScore !== null && (
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 20, background: 'rgba(34,197,94,.1)', border: '1px solid rgba(34,197,94,.25)', color: 'var(--green)', whiteSpace: 'nowrap' }}>
+                      ★ {reliabilityScore} reliability
+                    </span>
+                  )}
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                {previewTags.map(c => <span key={c} className="chip chip-c" style={{ fontSize: 10 }}>{c}</span>)}
+
+              {/* Row 2: Tags */}
+              {previewTags.length > 0 && (
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 10 }}>
+                  {previewTags.map(tag => (
+                    <span key={tag} className="chip chip-c" style={{ fontSize: 10 }}>{tag}</span>
+                  ))}
+                </div>
+              )}
+
+              {/* Row 3: Footer disclaimer */}
+              <div style={{ fontSize: 11, color: 'var(--text3)', paddingTop: 10, borderTop: '1px solid rgba(255,255,255,.06)' }}>
+                Full name, employer &amp; salary hidden · Full profile unlocks after mutual interest
               </div>
-              <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text3)' }}>Full profile visible only after mutual interest · Salary hidden until match</div>
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text2)' }}>Your name, current employer, and salary are never shown. Employers express interest — you decide whether to engage.</div>
+            <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 10 }}>Employers express interest — you decide whether to engage. Nothing is revealed without your action.</div>
           </div>
         </div>
 
