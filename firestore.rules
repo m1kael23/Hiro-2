@@ -1,0 +1,252 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId} (matches Firebase Auth UID)
+    // Fields:
+    //   - id: string (required) - The UID
+    //   - email: string (required) - User's email
+    //   - mode: string (required, 'employer' or 'candidate')
+    //   - full_name: string (required)
+    //   - createdAt: timestamp (optional)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        ( (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.mode == 'admin') ||
+          (request.auth.token.email == "helio.silva1961@gmail.com" && request.auth.token.email_verified == true) );
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Domain Validator for UserProfile
+    function isValidEmployerFields(data) {
+      return ( !('company_name' in data) || (data.company_name is string && data.company_name.size() < 200) ) &&
+             ( !('tagline' in data) || (data.tagline is string && data.tagline.size() < 200) ) &&
+             ( !('bio' in data) || (data.bio is string && data.bio.size() < 2000) ) &&
+             ( !('company_stage' in data) || data.company_stage is string ) &&
+             ( !('company_size' in data) || data.company_size is string ) &&
+             ( !('location' in data) || (data.location is string && data.location.size() < 200) ) &&
+             ( !('visa_sponsorship' in data) || data.visa_sponsorship is bool ) &&
+             ( !('logo_url' in data) || (data.logo_url is string && data.logo_url.size() < 2000) ) &&
+             ( !('culture_photos' in data) || (data.culture_photos is list && data.culture_photos.size() < 10) ) &&
+             ( !('website' in data) || (data.website is string && data.website.size() < 200) ) &&
+             ( !('industry' in data) || (data.industry is string && data.industry.size() < 100) ) &&
+             ( !('company_description' in data) || (data.company_description is string && data.company_description.size() < 2000) ) &&
+             ( !('hq_location' in data) || (data.hq_location is string && data.hq_location.size() < 200) ) &&
+             ( !('culture_tags' in data) || (data.culture_tags is list && data.culture_tags.size() < 20) ) &&
+             ( !('work_model' in data) || (data.work_model is string && data.work_model.size() < 100) ) &&
+             ( !('intensity_level' in data) || (data.intensity_level is string && data.intensity_level.size() < 100) ) &&
+             ( !('team_dna' in data) || data.team_dna is list ) &&
+             ( !('open_roles' in data) || data.open_roles is list ) &&
+             ( !('trust_settings' in data) || data.trust_settings is map );
+    }
+
+    function isValidUserProfile(data) {
+      return hasRequiredFields(['id', 'email', 'mode', 'full_name']) &&
+             data.id == request.auth.uid &&
+             data.email is string && isValidEmail(data.email) &&
+             data.mode in ['employer', 'candidate'] &&
+             data.full_name is string && data.full_name.size() < 200 &&
+             (
+               (data.mode == 'candidate' &&
+                 ( !('skills' in data) || data.skills is list ) &&
+                 ( !('dna' in data) || data.dna is list ) &&
+                 ( !('work_experience' in data) || data.work_experience is list )
+               ) ||
+               (data.mode == 'employer' && isValidEmployerFields(data))
+             );
+    }
+
+    // Domain Validator for Job
+    function isValidJob(data) {
+      return hasRequiredFields(['id', 'employerId', 'title', 'status']) &&
+             data.id is string &&
+             data.employerId == request.auth.uid &&
+             data.title is string && data.title.size() < 200 &&
+             data.status in ['live', 'draft', 'closed'] &&
+             ( !('mustSkills' in data) || data.mustSkills is list );
+    }
+
+    // Domain Validator for Application
+    function isValidApplication(data) {
+      return ( !('jobId' in data) || data.jobId is string ) &&
+             ( !('candidateId' in data) || data.candidateId is string ) &&
+             ( !('employerId' in data) || data.employerId is string ) &&
+             ( !('candidateExpressedInterest' in data) || data.candidateExpressedInterest is bool ) &&
+             ( !('employerExpressedInterest' in data) || data.employerExpressedInterest is bool ) &&
+             ( !('status' in data) || data.status in ['pending', 'matched', 'rejected', 'applied', 'hired'] ) &&
+             ( !('stage' in data) || data.stage is string ) &&
+             ( !('id' in data) || data.id is string ) &&
+             ( !('createdAt' in data) || data.createdAt is timestamp ) &&
+             ( !('updatedAt' in data) || data.updatedAt is timestamp );
+    }
+
+    // Domain Validator for Offer
+    function isValidOffer(data) {
+      return hasRequiredFields(['jobId', 'candidateId', 'employerId', 'status']) &&
+             data.jobId is string &&
+             data.candidateId is string &&
+             data.employerId is string &&
+             data.status in ['sent', 'countered_by_candidate', 'countered_by_employer', 'accepted', 'withdrawn', 'declined'];
+    }
+
+    // Domain Validator for Notification
+    function isValidNotification(data) {
+      return hasRequiredFields(['userId', 'title', 'message']) &&
+             data.userId is string &&
+             data.title is string && data.title.size() < 200 &&
+             data.message is string && data.message.size() < 1000 &&
+             ( !('read' in data) || data.read is bool ) &&
+             ( !('type' in data) || data.type is string ) &&
+             ( !('route' in data) || data.route is string ) &&
+             ( !('createdAt' in data) || data.createdAt is timestamp );
+    }
+
+    // Domain Validator for PlaybookNotes
+    function isValidPlaybookNote(data) {
+      return hasRequiredFields(['jobId', 'candId', 'stage', 'employerId']) &&
+             data.jobId is string &&
+             data.candId is string &&
+             data.stage is string &&
+             data.employerId == request.auth.uid;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      // Allow reading profiles if logged in (needed for employer/candidate discovery)
+      // Note: This exposes email to other authenticated users. In a production app, 
+      // sensitive data should be moved to a private sub-collection.
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidUserProfile(request.resource.data);
+      allow update: if isOwner(userId) && isValidUserProfile(request.resource.data) &&
+                      request.resource.data.id == resource.data.id &&
+                      request.resource.data.email == resource.data.email;
+      allow delete: if false;
+    }
+
+    match /jobs/{jobId} {
+      // Candidates can read live jobs, employers can read their own jobs
+      allow read: if (isAuthenticated() && resource.data.status == 'live') || 
+                     (isAuthenticated() && resource.data.employerId == request.auth.uid);
+      
+      allow create: if isAuthenticated() && isValidJob(request.resource.data);
+      
+      allow update: if isAuthenticated() && 
+                      resource.data.employerId == request.auth.uid && 
+                      isValidJob(request.resource.data) &&
+                      request.resource.data.employerId == resource.data.employerId;
+      
+      allow delete: if isAuthenticated() && resource.data.employerId == request.auth.uid;
+    }
+
+    match /applications/{applicationId} {
+      // Candidates and employers involved can read
+      allow read: if isAuthenticated() && 
+                     (request.auth.uid == resource.data.candidateId || 
+                      request.auth.uid == resource.data.employerId ||
+                      (exists(/databases/$(database)/documents/jobs/$(resource.data.jobId)) && 
+                       get(/databases/$(database)/documents/jobs/$(resource.data.jobId)).data.employerId == request.auth.uid));
+      
+      // Candidate or Employer can create
+      allow create: if isAuthenticated() && 
+                      (request.auth.uid == request.resource.data.candidateId || 
+                       request.auth.uid == request.resource.data.employerId ||
+                       (exists(/databases/$(database)/documents/jobs/$(request.resource.data.jobId)) && 
+                        get(/databases/$(database)/documents/jobs/$(request.resource.data.jobId)).data.employerId == request.auth.uid));
+      
+      // Both can update their respective fields
+      allow update: if isAuthenticated() && 
+                      (request.auth.uid == resource.data.candidateId || 
+                       request.auth.uid == resource.data.employerId ||
+                       (exists(/databases/$(database)/documents/jobs/$(resource.data.jobId)) && 
+                        get(/databases/$(database)/documents/jobs/$(resource.data.jobId)).data.employerId == request.auth.uid));
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    match /threads/{threadId} {
+      allow read: if isAuthenticated() && request.auth.uid in resource.data.participants;
+      allow create: if isAuthenticated() && request.auth.uid in request.resource.data.participants;
+      allow update: if isAuthenticated() && request.auth.uid in resource.data.participants;
+      
+      match /messages/{messageId} {
+        allow read: if isAuthenticated() && request.auth.uid in get(/databases/$(database)/documents/threads/$(threadId)).data.participants;
+        allow create: if isAuthenticated() && request.auth.uid in get(/databases/$(database)/documents/threads/$(threadId)).data.participants;
+      }
+    }
+
+    match /playbooks/{employerId} {
+      allow read, write: if isAuthenticated() && request.auth.uid == employerId;
+    }
+
+    match /playbookNotes/{noteId} {
+      // noteId format: {jobId}_{candId}_{stage}
+      // We verify that the employer owns the note.
+      allow read: if isAuthenticated() && resource.data.employerId == request.auth.uid;
+      allow create: if isAuthenticated() && isValidPlaybookNote(request.resource.data);
+      allow update: if isAuthenticated() && isValidPlaybookNote(request.resource.data) &&
+                      request.resource.data.employerId == resource.data.employerId;
+    }
+
+    match /offers/{offerId} {
+      // offerId is {candidateId}_{jobId} (matches applicationId)
+      allow read: if isAuthenticated() && (
+                     (resource != null && (request.auth.uid == resource.data.candidateId || request.auth.uid == resource.data.employerId)) ||
+                     (resource == null && exists(/databases/$(database)/documents/applications/$(offerId)) && 
+                      (get(/databases/$(database)/documents/applications/$(offerId)).data.employerId == request.auth.uid ||
+                       get(/databases/$(database)/documents/applications/$(offerId)).data.candidateId == request.auth.uid))
+                   );
+      
+      allow create: if isAuthenticated() && 
+                       request.auth.uid == request.resource.data.employerId &&
+                       isValidOffer(request.resource.data);
+      
+      allow update: if isAuthenticated() && 
+                       (request.auth.uid == resource.data.candidateId || 
+                        request.auth.uid == resource.data.employerId) &&
+                       isValidOffer(request.resource.data);
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

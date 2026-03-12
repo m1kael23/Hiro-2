@@ -1,0 +1,179 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Stores user-specific metadata and preferences.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "mode": { "type": "string", "enum": ["employer", "candidate"] },
+        "full_name": { "type": "string" },
+        "first_name": { "type": "string" },
+        "last_name": { "type": "string" },
+        "job_title": { "type": "string" },
+        "experience_years": { "type": "string" },
+        "location": { "type": "string" },
+        "relocation": { "type": "string" },
+        "earliest_start": { "type": "string" },
+        "notice_period": { "type": "string" },
+        "looking_for": { "type": "string" },
+        "linkedin": { "type": "string" },
+        "portfolio": { "type": "string" },
+        "github": { "type": "string" },
+        "notion": { "type": "string" },
+        "availability": { "type": "string" },
+        "archetype": { "type": "string" },
+        "target_salary": { "type": "string" },
+        "company_stage": { "type": "string" },
+        "company_name": { "type": "string" },
+        "website": { "type": "string" },
+        "industry": { "type": "string" },
+        "company_size": { "type": "string" },
+        "company_description": { "type": "string" },
+        "hq_location": { "type": "string" },
+        "culture_tags": { "type": "array", "items": { "type": "string" } },
+        "work_model": { "type": "string" },
+        "intensity_level": { "type": "string" },
+        "team_dna": { "type": "array", "items": { "type": "number" } },
+        "open_roles": { "type": "array", "items": { "type": "object" } },
+        "trust_settings": { "type": "object" },
+        "visa_sponsorship": { "type": "boolean" },
+        "logo_url": { "type": "string" },
+        "culture_photos": { "type": "array", "items": { "type": "string" } },
+        "skills": { "type": "array", "items": { "type": "string" } },
+        "dna": { "type": "array", "items": { "type": "number" } },
+        "work_experience": { 
+          "type": "array", 
+          "items": { 
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "co": { "type": "string" },
+              "period": { "type": "string" },
+              "desc": { "type": "string" },
+              "color": { "type": "string" }
+            }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "email", "mode", "full_name"]
+    },
+    "Job": {
+      "title": "Job",
+      "description": "Represents a job posting created by an employer.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "employerId": { "type": "string" },
+        "companyName": { "type": "string" },
+        "title": { "type": "string" },
+        "department": { "type": "string" },
+        "location": { "type": "string" },
+        "remote": { "type": "string" },
+        "seniority": { "type": "string" },
+        "relocation": { "type": "string" },
+        "salMin": { "type": "string" },
+        "salMax": { "type": "string" },
+        "bonus": { "type": "string" },
+        "outcome6m": { "type": "string" },
+        "outcome12m": { "type": "string" },
+        "challenge": { "type": "string" },
+        "mustSkills": { "type": "array", "items": { "type": "string" } },
+        "experienceYears": { "type": "string" },
+        "equityMin": { "type": "string" },
+        "equityMax": { "type": "string" },
+        "cliffVest": { "type": "string" },
+        "perks": { "type": "object" },
+        "status": { "type": "string", "enum": ["live", "draft", "closed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "employerId", "title", "status"]
+    },
+    "Application": {
+      "title": "Application",
+      "description": "Represents a candidate's interest or application to a job.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "jobId": { "type": "string" },
+        "candidateId": { "type": "string" },
+        "employerId": { "type": "string" },
+        "candidateExpressedInterest": { "type": "boolean" },
+        "employerExpressedInterest": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["pending", "matched", "rejected"] },
+        "stage": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["jobId", "candidateId", "employerId"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "System notifications for users.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "message"]
+    },
+    "Thread": {
+      "title": "Thread",
+      "description": "Communication threads between users.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "participants": { "type": "array", "items": { "type": "string" } },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "unread": { "type": "boolean" },
+        "preview": { "type": "string" }
+      },
+      "required": ["participants"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Messages within a thread.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "from": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["from", "text"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile documents stored by their Auth UID."
+    },
+    "/jobs/{jobId}": {
+      "schema": "Job",
+      "description": "Job postings."
+    },
+    "/applications/{applicationId}": {
+      "schema": "Application",
+      "description": "Job applications and mutual matches."
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "User notifications."
+    },
+    "/threads/{threadId}": {
+      "schema": "Thread",
+      "description": "Communication threads between users."
+    },
+    "/threads/{threadId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Messages within a thread."
+    }
+  }
+}
