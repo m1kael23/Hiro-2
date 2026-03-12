@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { db } from '../../firebase';
 import { collection, query, where, orderBy, getDocs, limit } from 'firebase/firestore';
 
-// ── Score helpers ──────────────────────────────────────────────────────────────
+// ── Score helpers ──────────────────────────────────────────────────────────────────────────
 function calcReliabilityScore(events) {
   let noShows = 0, noOfferReply = 0, silentWithdraw = 0, cleanProcesses = 0;
   let honoured = 0, total = 0;
@@ -20,12 +20,8 @@ function calcReliabilityScore(events) {
       default: break;
     }
   }
-  if (total === 0) {
-    // New candidate — no events yet. Score is 70 (neutral).
-    // Process transparency can still earn points via vault submissions.
-    const vaultBonus = Math.min(30, cleanProcesses * 10);
-    return 70 + vaultBonus;
-  }
+  // FIX: New candidates start at 100 — earned by default, reduced only by violations.
+  if (total === 0) return 100;
   const base = Math.round(100 * (honoured / total));
   return Math.max(20, Math.min(100, base - 15*noShows - 10*noOfferReply - 8*silentWithdraw + 2*cleanProcesses));
 }
@@ -87,18 +83,18 @@ function buildDims(events) {
   const vaultPct     = Math.min(1, vaults / totalProc);
   const procScore    = Math.round(vaultPct * 30);
   return [
-    { id:'r1', icon:'ico-chat',    iconColor:'#a78bfa',         label:'Message responsiveness', score:`${msgScore}/25`,   scoreColor: msgScore>=20?'var(--green)':'var(--amber)',
+    { id:'r1', icon:'ico-chat',    iconColor:'#a78bfa',        label:'Message responsiveness', score:`${msgScore}/25`,   scoreColor: msgScore>=20?'var(--green)':'var(--amber)',
       sub: noShows===0?'Responded to all mutual match messages within 7 days':`${noShows} late / missed response${noShows>1?'s':''} on record`,
       tip: noShows===0?'Full score. You responded to every employer message within 7 days. The Hiro threshold is 7 days — late responses start reducing this dimension.':`Score deducted for ${noShows} missed or late response${noShows>1?'s':''}. Respond to all messages within 7 days to protect this dimension.` },
-    { id:'r2', icon:'ico-calendar', iconColor:'var(--text2)',   label:'Interview commitments',   score:`${intScore}/25`,   scoreColor: intScore>=20?'var(--green)':'#fb7185',
+    { id:'r2', icon:'ico-calendar', iconColor:'var(--text2)',  label:'Interview commitments',   score:`${intScore}/25`,   scoreColor: intScore>=20?'var(--green)':'#fb7185',
       sub: noShows===0?'No no-shows or same-day cancellations':`${noShows} no-show${noShows>1?'s':''} on record`,
       tip: noShows===0?'Full score. You attended every scheduled interview and gave at least 24 hours notice for any reschedules. This is one of the highest-weighted dimensions.':`Score deducted. No-shows are the hardest deduction to recover from. Give at least 24h notice for any reschedule.` },
-    { id:'r3', icon:'ico-check',   iconColor:'var(--teal)',     label:'Offer follow-through',    score:`${offerScore}/20`, scoreColor: offerScore===20?'var(--green)':'var(--amber)',
+    { id:'r3', icon:'ico-check',   iconColor:'var(--teal)',    label:'Offer follow-through',    score:`${offerScore}/20`, scoreColor: offerScore===20?'var(--green)':'var(--amber)',
       sub: offerScore===20?'No offer acceptances followed by withdrawals':'One or more offers not replied to within 7 days',
       tip: offerScore===20?'Full score. Withdrawing an accepted offer after a start date is set is one of the hardest deductions to recover from. Yours is clean.':'Reply to all offers within 7 days — even to decline. Silence triggers a deduction after 7 days.' },
-    { id:'r4', icon:'ico-flash2',  iconColor:'#a78bfa',         label:'Process transparency',    score:`${procScore}/30`,  scoreColor: procScore>=25?'var(--green)':'var(--cyan)',
+    { id:'r4', icon:'ico-flash2',  iconColor:'#a78bfa',        label:'Process transparency',    score:`${procScore}/30`,  scoreColor: procScore>=25?'var(--green)':'var(--cyan)',
       sub: vaults===0?'No Vault reports submitted yet':`Submitted ${vaults} Vault report${vaults>1?'s':''} after completed processes`,
-      tip: procScore<30?`Submitting Vault reports for completed processes would boost your score toward 100.`:'Full score. All processes have a Vault report submitted.',
+      tip: procScore<30?'Submitting Vault reports for completed processes would boost your score toward 100.':'Full score. All processes have a Vault report submitted.',
       showVaultBtn: procScore < 30 },
   ];
 }
@@ -111,6 +107,8 @@ export default function CandGhosting() {
   const [openTip, setOpenTip] = useState(null);
 
   useEffect(() => {
+    // FIX: reset loading state on profile change so stale score never shows
+    setLoading(true);
     if (!profile?.id) { setLoading(false); return; }
     async function load() {
       try {
@@ -131,9 +129,9 @@ export default function CandGhosting() {
     load();
   }, [profile?.id]);
 
-  // Always compute from live ghost_events — never use the stale onboarding default
-  const score      = loading ? (profile?.reliability_score ?? 70) : calcReliabilityScore(events);
-  const scoreColor = getScoreColor(score);
+  // FIX: derive score purely from live ghost_events — never fall back to stale profile value
+  const score      = loading ? null : calcReliabilityScore(events);
+  const scoreColor = score !== null ? getScoreColor(score) : 'var(--text3)';
   const dims       = buildDims(events);
 
   const timeline = events.slice(0, 10).map(e => {
@@ -168,17 +166,29 @@ export default function CandGhosting() {
               <div style={{ position: 'relative', width: 88, height: 88 }}>
                 <svg width="88" height="88" viewBox="0 0 88 88" style={{ transform: 'rotate(-90deg)' }}>
                   <circle cx="44" cy="44" r="36" fill="none" stroke="rgba(255,255,255,.08)" strokeWidth="8" />
-                  <circle cx="44" cy="44" r="36" fill="none" stroke={scoreColor} strokeWidth="8" strokeLinecap="round"
-                    strokeDasharray="226" strokeDashoffset={String(Math.round(226 * (1 - score / 100)))}
-                    style={{ transition: 'stroke-dashoffset .8s ease' }} />
+                  {score !== null && (
+                    <circle cx="44" cy="44" r="36" fill="none" stroke={scoreColor} strokeWidth="8" strokeLinecap="round"
+                      strokeDasharray="226" strokeDashoffset={String(Math.round(226 * (1 - score / 100)))}
+                      style={{ transition: 'stroke-dashoffset .8s ease' }} />
+                  )}
                 </svg>
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-                  <div style={{ fontFamily: "'Manrope',sans-serif", fontSize: 24, fontWeight: 800, color: scoreColor }}>{score}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text3)' }}>/100</div>
+                  {loading ? (
+                    <div style={{ fontSize: 11, color: 'var(--text3)' }}>…</div>
+                  ) : (
+                    <>
+                      <div style={{ fontFamily: "'Manrope',sans-serif", fontSize: 24, fontWeight: 800, color: scoreColor }}>{score}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>/100</div>
+                    </>
+                  )}
                 </div>
               </div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: scoreColor, marginTop: 6 }}>{getScoreLabel(score)}</div>
-              <div style={{ fontSize: 10, color: 'var(--text3)' }}>{getPercentile(score)}</div>
+              {!loading && score !== null && (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: scoreColor, marginTop: 6 }}>{getScoreLabel(score)}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text3)' }}>{getPercentile(score)}</div>
+                </>
+              )}
             </div>
 
             <div>
@@ -193,21 +203,23 @@ export default function CandGhosting() {
                 ].map(([v, c, l]) => {
                   const rgb = c === 'var(--green)' ? '34,197,94' : c === '#fb7185' ? '248,113,133' : '90,91,114';
                   return (
-                  <div key={l} style={{ padding:'9px 11px', borderRadius:'var(--r)', background:`rgba(${rgb},.07)`, border:`1px solid rgba(${rgb},.2)`, textAlign:'center' }}>
-                    <div style={{ fontFamily:"'Manrope',sans-serif", fontSize:20, fontWeight:800, color:c }}>{v}</div>
-                    <div style={{ fontSize:10, color:'var(--text3)' }}>{l}</div>
-                  </div>
+                    <div key={l} style={{ padding:'9px 11px', borderRadius:'var(--r)', background:`rgba(${rgb},.07)`, border:`1px solid rgba(${rgb},.2)`, textAlign:'center' }}>
+                      <div style={{ fontFamily:"'Manrope',sans-serif", fontSize:20, fontWeight:800, color:c }}>{loading ? '…' : v}</div>
+                      <div style={{ fontSize:10, color:'var(--text3)' }}>{l}</div>
+                    </div>
                   );
                 })}
               </div>
-              <div style={{ padding:'10px 12px', borderRadius:'var(--r)', background:`rgba(${score>=75?'34,197,94':'245,158,11'},.07)`, border:`1px solid rgba(${score>=75?'34,197,94':'245,158,11'},.25)`, fontSize:12, color:'var(--text2)', lineHeight:1.6 }}>
-                {score >= 90
-                  ? <>⚡ Your reliability score unlocks <strong style={{ color:'var(--green)' }}>2.3× faster employer responses</strong> and priority placement in employer searches on Hiro.</>
-                  : score >= 75
-                  ? <>⚡ Good standing. Keep attending interviews and responding to offers to push above 90 and unlock priority placement.</>
-                  : <>⚠️ Your score is affecting match visibility. Address outstanding flags to recover your standing.</>
-                }
-              </div>
+              {!loading && score !== null && (
+                <div style={{ padding:'10px 12px', borderRadius:'var(--r)', background:`rgba(${score>=75?'34,197,94':'245,158,11'},.07)`, border:`1px solid rgba(${score>=75?'34,197,94':'245,158,11'},.25)`, fontSize:12, color:'var(--text2)', lineHeight:1.6 }}>
+                  {score >= 90
+                    ? <>⚡ Your reliability score unlocks <strong style={{ color:'var(--green)' }}>2.3× faster employer responses</strong> and priority placement in employer searches on Hiro.</>
+                    : score >= 75
+                    ? <>⚡ Good standing. Keep attending interviews and responding to offers to push above 90 and unlock priority placement.</>
+                    : <>⚠️ Your score is affecting match visibility. Address outstanding flags to recover your standing.</>
+                  }
+                </div>
+              )}
             </div>
           </div>
 
