@@ -8,7 +8,7 @@
  *     typing:      { [uid]: bool }
  *     preview:     string
  *     emoji:       string
- *     name:        string          ← display name for candidate (shows company name)
+ *     name:        string
  *     jobTitle:    string
  *     matchScore:  number
  *     updatedAt:   timestamp
@@ -18,7 +18,6 @@
  *     text:      string
  *     type:      'text' | 'event' | 'note'
  *     createdAt: timestamp
- *     — event/note extra fields: color, bg, border
  */
 
 import { createContext, useContext, useState, useCallback, useMemo, useEffect, useRef } from 'react';
@@ -28,6 +27,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from './AuthContext';
+import { notifyNewMessage } from '../services/notificationService';
 
 const MessageContext = createContext({
   threads:        {},
@@ -42,7 +42,7 @@ const MessageContext = createContext({
   partnerTyping:  {},
 });
 
-/* ─── Demo threads (fallback when user has no Firestore threads) ── */
+/* ─── Demo threads ─────────────────────────────────────────────── */
 const DEMO_THREADS = {
   monzo: {
     id: 'monzo', emoji: '🏦', name: 'Monzo · Sarah', jobTitle: 'Sr PM',
@@ -64,9 +64,9 @@ const DEMO_THREADS = {
 
 const DEMO_MESSAGES = {
   monzo: [
-    { id: 'd1', from: 'them', senderId: 'monzo',  avatar: '🏦', text: 'Hi! 👋 We loved your profile — your Work DNA fills exactly the gap we have. Free Thursday or Friday?', time: 'Sarah · 2h ago' },
-    { id: 'd2', from: 'me',   senderId: 'me',               text: 'Thursday 2–5pm GMT works perfectly. Really excited about this one.', time: 'You · 1h ago' },
-    { id: 'd3', from: 'them', senderId: 'monzo',  avatar: '🏦', text: 'Perfect! Calendar invite sent for Thu 3pm GMT. Casual chat — no formal prep needed.', time: 'Sarah · 45m ago' },
+    { id: 'd1', from: 'them', senderId: 'monzo',     avatar: '🏦', text: 'Hi! 👋 We loved your profile — your Work DNA fills exactly the gap we have. Free Thursday or Friday?', time: 'Sarah · 2h ago' },
+    { id: 'd2', from: 'me',   senderId: 'me',                      text: 'Thursday 2–5pm GMT works perfectly. Really excited about this one.', time: 'You · 1h ago' },
+    { id: 'd3', from: 'them', senderId: 'monzo',     avatar: '🏦', text: 'Perfect! Calendar invite sent for Thu 3pm GMT. Casual chat — no formal prep needed.', time: 'Sarah · 45m ago' },
     { id: 'd4', type: 'event', text: '📅 Interview scheduled — Thu 3pm GMT', color: 'var(--green)', bg: 'rgba(34,197,94,.07)', border: 'rgba(34,197,94,.2)' },
   ],
   synthesia: [
@@ -81,62 +81,51 @@ const DEMO_MESSAGES = {
 export function MessageProvider({ children }) {
   const { profile } = useAuth();
 
-  const [firestoreThreads, setFirestoreThreads] = useState(null); // null = still loading
+  const [firestoreThreads, setFirestoreThreads] = useState(null);
   const [activeMessages,   setActiveMessages]   = useState([]);
   const [activeThreadId,   setActiveThreadId]   = useState(null);
   const [partnerTyping,    setPartnerTyping]     = useState({});
 
   const msgUnsubRef     = useRef(null);
   const typingUnsubRef  = useRef(null);
-  const typingTimerRef  = useRef(null);
 
-  /* ── 1. Subscribe to this user's thread list ──────────────────── */
+  /* ── 1. Subscribe to thread list ─────────────────────────────── */
   useEffect(() => {
     if (!profile?.id) { setFirestoreThreads(null); return; }
-
     const q = query(
       collection(db, 'threads'),
       where('participants', 'array-contains', profile.id),
       orderBy('updatedAt', 'desc'),
     );
-
     const unsub = onSnapshot(q,
       snap => {
         const map = {};
         snap.docs.forEach(d => { map[d.id] = { id: d.id, ...d.data(), messages: [] }; });
         setFirestoreThreads(map);
       },
-      err => {
-        console.error('MessageContext thread list error:', err);
-        setFirestoreThreads({});            // fall through to demo
-      },
+      err => { console.error('MessageContext thread list error:', err); setFirestoreThreads({}); },
     );
     return () => unsub();
   }, [profile?.id]);
 
-  /* ── 2. Load messages for active thread ───────────────────────── */
+  /* ── 2. Load messages for active thread ──────────────────────── */
   const loadThread = useCallback((threadId) => {
     if (!threadId) return;
-
-    // Tear down previous subscriptions
     if (msgUnsubRef.current)    { msgUnsubRef.current();    msgUnsubRef.current    = null; }
     if (typingUnsubRef.current) { typingUnsubRef.current(); typingUnsubRef.current = null; }
 
     setActiveThreadId(threadId);
     setPartnerTyping(p => ({ ...p, [threadId]: false }));
 
-    // Demo thread — use static messages, no Firestore sub needed
     if (DEMO_THREADS[threadId]) {
       setActiveMessages(DEMO_MESSAGES[threadId] || []);
       return;
     }
 
-    // Real thread — subscribe to messages sub-collection
     const msgQ = query(
       collection(db, 'threads', threadId, 'messages'),
       orderBy('createdAt', 'asc'),
     );
-
     msgUnsubRef.current = onSnapshot(msgQ,
       snap => {
         const msgs = snap.docs.map(d => {
@@ -162,102 +151,100 @@ export function MessageProvider({ children }) {
       err => console.error('MessageContext messages sub error:', err),
     );
 
-    // Subscribe to typing field on thread doc
     typingUnsubRef.current = onSnapshot(doc(db, 'threads', threadId),
       snap => {
         const typing = snap.data()?.typing || {};
-        const othersTyping = Object.entries(typing).some(
-          ([uid, val]) => uid !== profile?.id && val === true,
-        );
+        const othersTyping = Object.entries(typing).some(([uid, val]) => uid !== profile?.id && val === true);
         setPartnerTyping(p => ({ ...p, [threadId]: othersTyping }));
       },
       () => {},
     );
   }, [profile?.id]);
 
-  // Cleanup on unmount
   useEffect(() => () => {
     if (msgUnsubRef.current)    msgUnsubRef.current();
     if (typingUnsubRef.current) typingUnsubRef.current();
   }, []);
 
-  /* ── 3. Typing indicator ──────────────────────────────────────── */
+  /* ── 3. Typing indicator ─────────────────────────────────────── */
   const setTyping = useCallback(async (threadId, isTyping) => {
     if (!profile?.id || !threadId || DEMO_THREADS[threadId]) return;
     try {
-      await updateDoc(doc(db, 'threads', threadId), {
-        [`typing.${profile.id}`]: isTyping,
-      });
+      await updateDoc(doc(db, 'threads', threadId), { [`typing.${profile.id}`]: isTyping });
     } catch (e) { /* non-critical */ }
   }, [profile?.id]);
 
-  /* ── 4. Send a message ────────────────────────────────────────── */
+  /* ── 4. Send a message ── fires notifyNewMessage to recipient ── */
   const sendMessage = useCallback(async (threadId, text) => {
     if (!text?.trim()) return;
 
-    // Demo thread — optimistic only, no Firestore write
+    // Demo thread — optimistic only
     if (DEMO_THREADS[threadId]) {
-      setActiveMessages(p => [...p, {
-        id: `local-${Date.now()}`, from: 'me', senderId: 'me',
-        text: text.trim(), time: 'just now',
-      }]);
+      setActiveMessages(p => [...p, { id: `local-${Date.now()}`, from: 'me', senderId: 'me', text: text.trim(), time: 'just now' }]);
       return;
     }
 
     if (!profile?.id) return;
 
     // Optimistic update
-    setActiveMessages(p => [...p, {
-      id: `opt-${Date.now()}`, from: 'me', senderId: profile.id,
-      text: text.trim(), time: 'now',
-    }]);
+    setActiveMessages(p => [...p, { id: `opt-${Date.now()}`, from: 'me', senderId: profile.id, text: text.trim(), time: 'now' }]);
 
     try {
+      // Get thread metadata so we can notify the correct recipient
+      const thread = firestoreThreads?.[threadId];
+      const recipientId = thread?.participants?.find(uid => uid !== profile.id) ?? null;
+      const senderName  = profile.company_name || profile.full_name || 'Someone';
+      const mode        = profile.mode === 'employer' ? 'candidate' : 'employer';
+
       await Promise.all([
+        // Write the message
         addDoc(collection(db, 'threads', threadId, 'messages'), {
           senderId:  profile.id,
           text:      text.trim(),
           createdAt: serverTimestamp(),
         }),
+        // Update thread preview + mark recipient unread
         updateDoc(doc(db, 'threads', threadId), {
           preview:   text.trim().slice(0, 80),
           updatedAt: serverTimestamp(),
+          ...(recipientId ? { [`unreadBy.${recipientId}`]: true }  : {}),
           [`unreadBy.${profile.id}`]: false,
         }),
         setTyping(threadId, false),
+        // 🔔 Notify recipient
+        recipientId ? notifyNewMessage({
+          recipientId,
+          senderName,
+          preview: text.trim(),
+          mode,
+        }) : Promise.resolve(),
       ]);
     } catch (e) {
       console.error('sendMessage error:', e);
     }
-  }, [profile?.id, setTyping]);
+  }, [profile?.id, profile?.company_name, profile?.full_name, profile?.mode, firestoreThreads, setTyping]);
 
-  /* ── 5. Mark thread as read ───────────────────────────────────── */
+  /* ── 5. Mark thread as read ──────────────────────────────────── */
   const markAsRead = useCallback(async (threadId) => {
     if (!profile?.id || !threadId || DEMO_THREADS[threadId]) return;
     try {
-      await updateDoc(doc(db, 'threads', threadId), {
-        [`unreadBy.${profile.id}`]: false,
-      });
+      await updateDoc(doc(db, 'threads', threadId), { [`unreadBy.${profile.id}`]: false });
     } catch (e) { /* non-critical */ }
   }, [profile?.id]);
 
-  /* ── 6. Create a new thread between two users ─────────────────── */
+  /* ── 6. Create a new thread ──────────────────────────────────── */
   const createThread = useCallback(async ({
     candidateId, employerId, jobId, jobTitle,
     companyName, emoji, candidateName, matchScore,
   }) => {
     if (!profile?.id) return null;
-
-    // Check for existing thread on same job pair
     try {
       const existing = await getDocs(query(
         collection(db, 'threads'),
         where('participants', 'array-contains', candidateId),
         where('jobId', '==', jobId),
       ));
-      const found = existing.docs.find(d =>
-        d.data().participants.includes(employerId),
-      );
+      const found = existing.docs.find(d => d.data().participants.includes(employerId));
       if (found) return found.id;
     } catch (e) { /* proceed to create */ }
 
@@ -269,7 +256,7 @@ export function MessageProvider({ children }) {
       emoji:         emoji         || '💬',
       candidateName: candidateName || '',
       matchScore:    matchScore    || null,
-      name:          companyName   || '',      // candidate sees company name
+      name:          companyName   || '',
       preview:       '',
       unreadBy:      { [candidateId]: true, [employerId]: false },
       typing:        {},
@@ -279,14 +266,14 @@ export function MessageProvider({ children }) {
     return ref.id;
   }, [profile?.id]);
 
-  /* ── Derived: threads visible to UI ──────────────────────────── */
+  /* ── Derived: threads ────────────────────────────────────────── */
   const threads = useMemo(() => {
-    if (firestoreThreads === null)              return DEMO_THREADS; // still loading
-    if (Object.keys(firestoreThreads).length)  return firestoreThreads;
-    return DEMO_THREADS;                                             // empty → show demo
+    if (firestoreThreads === null)             return DEMO_THREADS;
+    if (Object.keys(firestoreThreads).length) return firestoreThreads;
+    return DEMO_THREADS;
   }, [firestoreThreads]);
 
-  /* ── Derived: unread count ────────────────────────────────────── */
+  /* ── Derived: unread count ───────────────────────────────────── */
   const unreadCount = useMemo(() =>
     Object.values(threads).filter(t => {
       if (t.unread) return true;
