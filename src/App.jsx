@@ -52,6 +52,12 @@ import PrivacyPolicy  from './components/legal/PrivacyPolicy';
 import TermsOfService from './components/legal/TermsOfService';
 import CookiePolicy   from './components/legal/CookiePolicy';
 
+// New features — Batch 4
+import AdminPanel          from './components/admin/AdminPanel';
+import ReferralHub         from './components/shared/ReferralHub';
+import EmpMessages         from './components/employer/EmpMessages';
+import PublicEmployerPage  from './components/employer/PublicEmployerPage';
+
 const VIEW_MAP = {
   'emp-dashboard':    EmpDashboard,
   'emp-pipeline':     EmpPipeline,
@@ -90,6 +96,11 @@ const VIEW_MAP = {
   'legal-privacy':    PrivacyPolicy,
   'legal-terms':      TermsOfService,
   'legal-cookies':    CookiePolicy,
+  // Batch 4 routes
+  'admin':                AdminPanel,
+  'referral':             ReferralHub,
+  'emp-messages':         EmpMessages,
+  'public-employer':      PublicEmployerPage,
 };
 
 export default function App() {
@@ -141,10 +152,15 @@ export default function App() {
   let activeRoute = currentRoute;
   const isEmployer = profile.mode === 'employer';
   
-  if (isEmployer && activeRoute.startsWith('cand-')) {
-    activeRoute = 'emp-dashboard';
-  } else if (!isEmployer && activeRoute.startsWith('emp-')) {
-    activeRoute = 'cand-home';
+  // Allow shared routes for both modes
+  const sharedRoutes = ['admin', 'referral', 'public-employer', 'notifications', 'legal-privacy', 'legal-terms', 'legal-cookies'];
+  
+  if (!sharedRoutes.includes(activeRoute)) {
+    if (isEmployer && activeRoute.startsWith('cand-')) {
+      activeRoute = 'emp-dashboard';
+    } else if (!isEmployer && activeRoute.startsWith('emp-')) {
+      activeRoute = 'cand-home';
+    }
   }
 
   const View = VIEW_MAP[activeRoute] || (isEmployer ? EmpDashboard : CandHome);
@@ -155,7 +171,7 @@ export default function App() {
       <div className="app-body">
         <Sidebar />
         <div className="main-area">
-          <View key={activeRoute} />
+          <View key={activeRoute} employerId={activeRoute === 'public-employer' ? profile?.id : undefined} />
         </div>
       </div>
       <ToastContainer />

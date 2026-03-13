@@ -37,12 +37,16 @@ const empNav = [
     ]
   },
   {
+    id: 'emp-messages', label: 'Messages', icon: '💬',
+  },
+  {
     id: 'emp-settings-group', label: 'Settings', icon: '⚙', drawer: 'emp-settings-drawer',
     sub: [
       { id: 'emp-company',  label: 'Company profile' },
       { id: 'emp-ghosting', label: 'Ghosting Score' },
       { id: 'emp-pricing',  label: 'Plan & billing' },
       { id: 'emp-settings', label: 'Account settings' },
+      { id: 'referral',     label: 'Refer & Earn 🎁' },
     ]
   },
 ];
@@ -83,6 +87,7 @@ const candNav = [
       { id: 'cand-ghosting', label: 'Reliability Score' },
       { id: 'cand-stealth',  label: 'Stealth & privacy' },
       { id: 'cand-settings', label: 'Account settings' },
+      { id: 'referral',      label: 'Refer & Earn 🎁' },
     ]
   },
 ];
@@ -293,6 +298,25 @@ export default function Sidebar() {
       }
       return item;
     });
+  }
+
+  // Employer message badge
+  if (mode === 'employer' || isEmployer) {
+    nav = nav.map(item => {
+      if (item.id === 'emp-messages') {
+        return { ...item, badge: unreadMessages > 0 ? unreadMessages.toString() : null, badgeColor: 'violet' };
+      }
+      return item;
+    });
+  }
+
+  // Admin nav item — shown to admin users only
+  const isAdmin = profile?.mode === 'admin' || profile?.email === 'helio.silva1961@gmail.com';
+  if (isAdmin) {
+    nav = [
+      { id: 'admin', label: 'Admin Panel', icon: '⚡' },
+      ...nav,
+    ];
   }
 
   // Inject notifications at the top if there are unread ones

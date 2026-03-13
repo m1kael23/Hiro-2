@@ -244,6 +244,12 @@ service cloud.firestore {
                        isValidOffer(request.resource.data);
     }
 
+    // Referral programme
+    match /referrals/{userId} {
+      allow read:  if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
     // Default deny
     match /{document=**} {
       allow read, write: if false;
