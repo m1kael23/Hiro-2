@@ -324,6 +324,19 @@ h1, h2, h3, h4, h5 {
 }
 .sel option { background: #0c0e1a; }
 
+/* ── Modal overlay — centres modals in viewport ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
 .sel-mini {
   border-radius: var(--rp);
   border: 1px solid var(--border2);

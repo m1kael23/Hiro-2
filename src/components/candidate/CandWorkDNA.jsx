@@ -9,6 +9,8 @@ import {
   dnaToProfile,
 } from '../../lib/dnaEngine';
 import { fanOutCandidateMatches } from '../../lib/matchingEngine';
+import { collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
+import { db } from '../../firebase';
 
 /* ─────────────────────────────────────────────
    SVG Radar Chart  (pure SVG, no lib needed)
@@ -290,59 +292,125 @@ function ArchetypeExplorer({ currentId }) {
 }
 
 /* ─────────────────────────────────────────────
-   DNA Match Preview (simulated job matches)
+   DNA Match Preview — live Firestore jobs
+   Falls back to a skeleton when no jobs exist yet.
 ───────────────────────────────────────────── */
-const SAMPLE_JOBS = [
-  { co: 'Monzo', role: 'Sr PM — Payments', jobDna: [30, 20, 40, 25, 30, 55, 50], skills: 'Fintech · Payments · SQL' },
-  { co: 'Revolut', role: 'Lead Product Manager', jobDna: [65, 65, 50, 70, 40, 75, 65], skills: 'Scale-up · Growth · Data' },
-  { co: 'Synthesia', role: 'PM — AI Products', jobDna: [45, 35, 55, 40, 55, 80, 55], skills: 'AI/ML · B2B SaaS · Growth' },
-  { co: 'Wise', role: 'Senior PM', jobDna: [40, 25, 45, 30, 50, 50, 45], skills: 'Payments · Fintech · Cross-functional' },
-];
 
-function score(candDna, jobDna) {
-  let total = 0;
-  let count = 0;
+// Pure DNA similarity score (same formula as dnaEngine scoreDna)
+// Weights mirror dnaEngine: [1.2, 1.0, 0.9, 1.1, 1.0, 0.8, 0.9]
+const DNA_WEIGHTS = [1.2, 1.0, 0.9, 1.1, 1.0, 0.8, 0.9];
+const TOLERANCE   = 22;
+
+function scoreDna(candDna, jobDna) {
+  if (!candDna || !jobDna || jobDna.length < 7) return 0;
+  let weighted = 0;
+  let maxWeight = 0;
   for (let i = 0; i < 7; i++) {
-    if (jobDna[i] == null) continue;
-    const dist = Math.abs((candDna[i] || 50) - jobDna[i]);
-    const s = Math.max(0, 1 - dist / 25);
-    total += s * s;
-    count++;
+    const w    = DNA_WEIGHTS[i];
+    const dist = Math.abs((candDna[i] ?? 50) - (jobDna[i] ?? 50));
+    const raw  = Math.max(0, 1 - dist / TOLERANCE);
+    weighted  += w * raw * raw;
+    maxWeight += w;
   }
-  if (!count) return 85;
-  return Math.min(99, Math.round((total / count) * 100));
+  return Math.min(99, Math.round((weighted / maxWeight) * 100));
 }
 
+// Fetch up to 6 live jobs from Firestore, ordered by recency
+async function fetchLiveJobs() {
+  const snap = await getDocs(query(
+    collection(db, 'jobs'),
+    where('status', '==', 'live'),
+    orderBy('publishedAt', 'desc'),
+    limit(6)
+  ));
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+// Skeleton placeholder shown while loading or when Firestore is empty
+const FALLBACK_JOBS = [
+  { id: '__f1', companyName: '—',  title: 'Loading roles…',  dnaPrefs: [50,50,50,50,50,50,50], skills: [] },
+  { id: '__f2', companyName: '—',  title: 'Loading roles…',  dnaPrefs: [50,50,50,50,50,50,50], skills: [] },
+  { id: '__f3', companyName: '—',  title: 'Loading roles…',  dnaPrefs: [50,50,50,50,50,50,50], skills: [] },
+];
+
 function MatchPreview({ dna }) {
-  const matches = SAMPLE_JOBS.map(j => ({ ...j, pct: score(dna, j.jobDna) }))
-    .sort((a, b) => b.pct - a.pct);
+  const [jobs,    setJobs]    = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Load once on mount — jobs list is stable enough not to need re-fetch on slider move
+  useEffect(() => {
+    fetchLiveJobs()
+      .then(liveJobs => setJobs(liveJobs))
+      .catch(() => setJobs([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  // Score every job against the *current* dna (updates live as sliders move)
+  const source = loading ? FALLBACK_JOBS : (jobs.length > 0 ? jobs : []);
+
+  const matches = source
+    .map(j => ({
+      id:          j.id,
+      co:          j.companyName || j.company || '—',
+      role:        j.title       || j.role    || '—',
+      jobDna:      j.dnaPrefs    || j.jobDna  || [],
+      skills:      Array.isArray(j.skills) ? j.skills.slice(0, 3).join(' · ') : (j.skills || ''),
+      isFallback:  j.id?.startsWith('__f'),
+    }))
+    .map(j => ({ ...j, pct: j.isFallback ? 0 : scoreDna(dna, j.jobDna) }))
+    .sort((a, b) => b.pct - a.pct)
+    .slice(0, 4);
+
+  const isEmpty = !loading && jobs.length === 0;
 
   return (
     <div className="card">
-      <div className="card-title" style={{ marginBottom: 4 }}>🤝 Live DNA match preview</div>
-      <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>How your current DNA scores against active roles. Updates as you move sliders.</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {matches.map(m => (
-          <div key={m.co} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 'var(--r)', background: 'rgba(255,255,255,.03)', border: '1px solid var(--border)' }}>
-            <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(108,71,255,.15)', border: '1px solid rgba(108,71,255,.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 800, color: '#a78bfa', flexShrink: 0, fontFamily: 'Manrope,sans-serif' }}>
-              {m.co[0]}
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, fontWeight: 700 }}>{m.co} — {m.role}</div>
-              <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>{m.skills}</div>
-            </div>
-            {/* Score bar */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-              <div style={{ width: 80, height: 4, borderRadius: 999, background: 'rgba(255,255,255,.08)', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${m.pct}%`, background: m.pct > 80 ? 'var(--green)' : m.pct > 65 ? 'var(--violet)' : 'var(--amber)', borderRadius: 999, transition: 'width .3s ease' }} />
-              </div>
-              <span style={{ fontFamily: 'Manrope,sans-serif', fontSize: 14, fontWeight: 800, color: m.pct > 80 ? 'var(--green)' : m.pct > 65 ? '#a78bfa' : 'var(--amber)', minWidth: 34 }}>{m.pct}%</span>
-            </div>
-          </div>
-        ))}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+        <div className="card-title" style={{ marginBottom: 0 }}>🤝 Live DNA match preview</div>
+        {!loading && jobs.length > 0 && (
+          <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, background: 'rgba(34,197,94,.12)', border: '1px solid rgba(34,197,94,.25)', color: 'var(--green)', fontWeight: 600 }}>
+            {jobs.length} live role{jobs.length !== 1 ? 's' : ''}
+          </span>
+        )}
       </div>
+      <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>
+        {isEmpty
+          ? 'No live roles yet — scores will appear here as jobs are published on Hiro.'
+          : 'How your current DNA scores against active roles. Updates as you move sliders.'}
+      </div>
+
+      {isEmpty && (
+        <div style={{ fontSize: 12, color: 'var(--text3)', padding: '16px 0', textAlign: 'center' }}>
+          No active roles to preview against. Ask your employer to publish a job on Hiro, or check back soon.
+        </div>
+      )}
+
+      {!isEmpty && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {matches.map((m, i) => (
+            <div key={m.id || i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 'var(--r)', background: 'rgba(255,255,255,.03)', border: '1px solid var(--border)', opacity: m.isFallback ? 0.4 : 1 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(108,71,255,.15)', border: '1px solid rgba(108,71,255,.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 800, color: '#a78bfa', flexShrink: 0, fontFamily: 'Manrope,sans-serif' }}>
+                {m.isFallback ? '…' : (m.co[0] || '?')}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>{m.isFallback ? 'Loading…' : `${m.co} — ${m.role}`}</div>
+                {m.skills && !m.isFallback && <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>{m.skills}</div>}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                <div style={{ width: 80, height: 4, borderRadius: 999, background: 'rgba(255,255,255,.08)', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: m.isFallback ? '0%' : `${m.pct}%`, background: m.pct > 80 ? 'var(--green)' : m.pct > 65 ? 'var(--violet)' : 'var(--amber)', borderRadius: 999, transition: 'width .3s ease' }} />
+                </div>
+                <span style={{ fontFamily: 'Manrope,sans-serif', fontSize: 14, fontWeight: 800, color: m.isFallback ? 'var(--text3)' : m.pct > 80 ? 'var(--green)' : m.pct > 65 ? '#a78bfa' : 'var(--amber)', minWidth: 34 }}>
+                  {m.isFallback ? '—' : `${m.pct}%`}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 10, lineHeight: 1.5 }}>
-        🧬 DNA scores update in real-time. Final match score combines DNA fit + skills + salary alignment.
+        🧬 DNA scores update in real-time as you move sliders. Final match score combines DNA fit + skills + salary alignment.
       </div>
     </div>
   );

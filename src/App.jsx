@@ -58,6 +58,10 @@ import ReferralHub         from './components/shared/ReferralHub';
 import EmpMessages         from './components/employer/EmpMessages';
 import PublicEmployerPage  from './components/employer/PublicEmployerPage';
 
+// Batch 5 — Blind matching
+import EmpBlindMatches     from './components/employer/EmpBlindMatches';
+import CandBlindMatches    from './components/candidate/CandBlindMatches';
+
 const VIEW_MAP = {
   'emp-dashboard':    EmpDashboard,
   'emp-pipeline':     EmpPipeline,
@@ -101,6 +105,9 @@ const VIEW_MAP = {
   'referral':             ReferralHub,
   'emp-messages':         EmpMessages,
   'public-employer':      PublicEmployerPage,
+  // Batch 5 — Blind matching
+  'emp-blind-matches':    EmpBlindMatches,
+  'cand-blind-matches':   CandBlindMatches,
 };
 
 export default function App() {

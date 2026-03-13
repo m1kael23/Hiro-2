@@ -8,6 +8,8 @@ import { useApp } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
 import { analyzeTrajectory } from '../../services/geminiService';
 import { scoreCandidateForJob } from '../../lib/matchStore';
+import { logGhostEvent, ghostTypeForMove } from '../../lib/ghostEvents';
+import InterviewScheduler from '../shared/InterviewScheduler';
 
 const DEFAULT_PLAYBOOK = {
   screen: {
@@ -256,6 +258,16 @@ function PlaybookTab({ cand, col, playbook, jobId, showToast }) {
     const now = new Date().toISOString();
     const docRef = doc(db, 'playbookNotes', `${jobId}_${cand.id}_${col}`);
     await setDoc(docRef, { scores, scoreNotes, questionNotes, overallNote, recommendation, submitted: true, submittedAt: now, candId: cand.id, jobId, stage: col, employerId: profile.id, updatedAt: serverTimestamp() }, { merge: true });
+    // Log ghost event: employer submitted structured feedback for this candidate
+    const avgScoreVal = Object.values(scores).filter(Boolean);
+    const avgForGhost = avgScoreVal.length
+      ? parseFloat((avgScoreVal.reduce((a, b) => a + b, 0) / avgScoreVal.length).toFixed(1))
+      : null;
+    logGhostEvent(cand.id, profile.id, jobId, 'feedback_sent', {
+      stage: col,
+      score: avgForGhost,
+      recommendation,
+    });
     setSubmitted(true); setSubmittedAt(now);
     showToast('Scorecard submitted — hiring team notified', 'success');
   }
@@ -937,6 +949,8 @@ export default function EmpPipeline() {
   const [dragOver, setDragOver] = useState(null);
   const [showPlaybookEditor, setShowPlaybookEditor] = useState(false);
   const [playbook, setPlaybook] = useState(DEFAULT_PLAYBOOK);
+  const [scheduleOpen,  setScheduleOpen]  = useState(false);
+  const [schedulingApp, setSchedulingApp] = useState(null);
 
   useEffect(() => {
     if (!profile || !profile.id) return;
@@ -1035,6 +1049,10 @@ export default function EmpPipeline() {
         dna: { l: `DNA ${scores.dna}%`, color: '#f9a8d4' },
         reloc: !!(cand && (cand.relocation || cand.reloc)),
         btns: [{ l: 'Message', p: true }, { l: 'Screen', m: 'screen' }],
+        candidateName: (cand && (cand.full_name || cand.name)) || 'Candidate',
+        jobTitle: ACTIVE_JOB && ACTIVE_JOB.title,
+        candidateId: app.candidateId,
+        stageIdx: STAGE_ORDER.indexOf((app.stage || 'matched').toLowerCase()) + 1,
       });
     });
     return res;
@@ -1068,6 +1086,13 @@ export default function EmpPipeline() {
           employerExpressedInterest: true, 
           createdAt: serverTimestamp(), 
           updatedAt: serverTimestamp() 
+        });
+      }
+      // Log ghost event for this stage move
+      const ghostType = ghostTypeForMove(from, to);
+      if (ghostType) {
+        logGhostEvent(id, profile.id, ACTIVE_JOB.id, ghostType, {
+          stage: to, prevStage: from,
         });
       }
       // When a candidate is hired, close the job posting (auto-archives in 30 days)
@@ -1151,6 +1176,11 @@ export default function EmpPipeline() {
                             onClick={e => { e.stopPropagation(); if (b.m) moveCard(card.id, id, b.m); else { setPanelId(card.id); setPanelCol(id); } }}
                           >{b.l}</button>
                         ))}
+                        {['screen','r1','r2'].includes(id) && (
+                          <button className="pc-btn"
+                            onClick={e => { e.stopPropagation(); setSchedulingApp({ id: card.appId, candidateName: card.candidateName, jobTitle: card.jobTitle, candidateId: card.candidateId, stage: card.stageIdx }); setScheduleOpen(true); }}
+                          >📅 Schedule</button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1182,6 +1212,18 @@ export default function EmpPipeline() {
           onClose={() => setShowPlaybookEditor(false)}
         />
       )}
+
+      <InterviewScheduler
+        open={scheduleOpen}
+        onClose={() => { setScheduleOpen(false); setSchedulingApp(null); }}
+        applicationId={schedulingApp?.id}
+        candidateName={schedulingApp?.candidateName}
+        jobTitle={schedulingApp?.jobTitle}
+        candidateId={schedulingApp?.candidateId}
+        employerId={profile?.id}
+        initialStage={schedulingApp?.stage ?? 1}
+        onScheduled={() => showToast('Interview scheduled ✓', 'success')}
+      />
     </div>
   );
 }

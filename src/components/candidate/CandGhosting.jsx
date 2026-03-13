@@ -1,300 +1,513 @@
-import { useState, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
-import { useAuth } from '../../context/AuthContext';
+/**
+ * CandGhosting.jsx — Candidate Reliability Score
+ *
+ * Real Firestore aggregation — no hardcoded mock values.
+ *
+ * Formula (from hiro-legal-framework-2.pdf §07):
+ *   RS = 100 × (commitments_honoured / total_commitments)
+ *   commitments_honoured = interviews_attended + offers_responded + processes_concluded
+ *   total_commitments    = interviews_confirmed + offers_received + processes_accepted
+ *
+ *   Penalty deductions:
+ *     no-show after confirmation  → −15
+ *     no response to offer >7d    → −10
+ *     silent withdrawal after 3+  → −8
+ *   Recovery: +2 per clean process. Floor: 20.
+ *
+ * Firestore reads:
+ *   applications/{id}  where candidateId == profile.id
+ *     Fields used: status, interviewConfirmed, interviewAttended,
+ *                  offerReceived, offerResponded, offerRespondedAt,
+ *                  offerReceivedAt, stagesCompleted, withdrawnSilently,
+ *                  noShow, createdAt, companyName, jobTitle
+ */
+
+import { useState, useEffect, useMemo } from 'react';
+import {
+  collection, query, where, getDocs, orderBy, limit,
+} from 'firebase/firestore';
 import { db } from '../../firebase';
-import { collection, query, where, orderBy, getDocs, limit } from 'firebase/firestore';
+import { useAuth } from '../../context/AuthContext';
+import { useApp }  from '../../context/AppContext';
 
-// ── Score helpers ──────────────────────────────────────────────────────────────────────────
-function calcReliabilityScore(events) {
-  let noShows = 0, noOfferReply = 0, silentWithdraw = 0, cleanProcesses = 0;
-  let honoured = 0, total = 0;
-  for (const e of events) {
-    switch (e.type) {
-      case 'interview_attended':  honoured++; total++; cleanProcesses++; break;
-      case 'offer_responded':     honoured++; total++; break;
-      case 'process_concluded':   honoured++; total++; cleanProcesses++; break;
-      case 'vault_submitted':     cleanProcesses++; break;
-      case 'no_show':             noShows++;  total++; break;
-      case 'no_offer_reply':      noOfferReply++; total++; break;
-      case 'silent_withdraw':     silentWithdraw++; total++; break;
-      default: break;
-    }
-  }
-  // FIX: New candidates start at 100 — earned by default, reduced only by violations.
-  if (total === 0) return 100;
-  const base = Math.round(100 * (honoured / total));
-  return Math.max(20, Math.min(100, base - 15*noShows - 10*noOfferReply - 8*silentWithdraw + 2*cleanProcesses));
-}
-
-function getScoreColor(s) {
+/* ── Score → display helpers ────────────────────────────────── */
+function scoreColor(s) {
   if (s >= 90) return 'var(--green)';
-  if (s >= 75) return 'var(--teal)';
-  if (s >= 60) return '#38bdf8';
-  if (s >= 45) return 'var(--amber)';
-  return '#fb7185';
+  if (s >= 75) return '#2dd4bf';
+  if (s >= 60) return 'var(--amber)';
+  if (s >= 45) return '#f97316';
+  return 'var(--red)';
 }
-function getScoreLabel(s) {
+function scoreBg(s) {
+  if (s >= 90) return 'rgba(34,197,94,.10)';
+  if (s >= 75) return 'rgba(45,212,191,.10)';
+  if (s >= 60) return 'rgba(245,158,11,.10)';
+  if (s >= 45) return 'rgba(249,115,22,.10)';
+  return 'rgba(251,113,133,.10)';
+}
+function scoreBorder(s) {
+  if (s >= 90) return 'rgba(34,197,94,.35)';
+  if (s >= 75) return 'rgba(45,212,191,.35)';
+  if (s >= 60) return 'rgba(245,158,11,.35)';
+  if (s >= 45) return 'rgba(249,115,22,.35)';
+  return 'rgba(251,113,133,.35)';
+}
+function scoreLabel(s) {
   if (s >= 90) return 'Excellent';
-  if (s >= 75) return 'Strong';
-  if (s >= 60) return 'Good';
-  if (s >= 45) return 'Fair';
-  return 'At risk';
+  if (s >= 75) return 'Good';
+  if (s >= 60) return 'Fair';
+  if (s >= 45) return 'Caution';
+  return 'Poor';
 }
-function getPercentile(s) {
-  if (s >= 95) return 'Top 3%';
-  if (s >= 90) return 'Top 8%';
-  if (s >= 80) return 'Top 20%';
-  if (s >= 70) return 'Top 35%';
-  return 'Bottom 40%';
+function scoreEmoji(s) {
+  if (s >= 90) return '🌟';
+  if (s >= 75) return '✅';
+  if (s >= 60) return '⚠️';
+  if (s >= 45) return '🔶';
+  return '🔴';
+}
+function benchImpact(s) {
+  if (s >= 90) return { label: 'Priority access + first-mover windows', color: 'var(--green)' };
+  if (s >= 75) return { label: 'Standard Bench access', color: '#2dd4bf' };
+  if (s >= 60) return { label: 'Reduced Bench visibility', color: 'var(--amber)' };
+  if (s >= 45) return { label: 'Bench access suspended / limited', color: '#f97316' };
+  return { label: 'Bench credits revoked — warning shown on profile', color: 'var(--red)' };
 }
 
-function eventToUI(e) {
-  const map = {
-    interview_attended: { color: 'var(--green)', label: 'Interview attended' },
-    offer_responded:    { color: 'var(--green)', label: 'Offer responded to' },
-    process_concluded:  { color: 'var(--green)', label: 'Process concluded professionally' },
-    vault_submitted:    { color: '#38bdf8',      label: 'Vault report submitted' },
-    no_show:            { color: '#fb7185',      label: 'Interview no-show' },
-    no_offer_reply:     { color: 'var(--amber)', label: 'Offer not replied' },
-    silent_withdraw:    { color: '#fb7185',      label: 'Silent withdrawal' },
+/* ── Score calculation (mirrors legal framework formula) ─────── */
+function calcReliabilityScore(apps) {
+  let interviewsConfirmed = 0;
+  let interviewsAttended  = 0;
+  let offersReceived      = 0;
+  let offersResponded     = 0;
+  let processesAccepted   = 0;
+  let processesConcluded  = 0;
+  let penalties           = 0;
+  let cleanProcesses      = 0;
+  let noShows             = 0;
+  let silentWithdrawals   = 0;
+  let lateOfferResponses  = 0;
+
+  apps.forEach(app => {
+    const d = app;
+
+    // Interviews
+    if (d.interviewConfirmed) {
+      interviewsConfirmed++;
+      if (d.interviewAttended) {
+        interviewsAttended++;
+      } else if (d.noShow) {
+        noShows++;
+        penalties += 15;
+      }
+    }
+
+    // Offers
+    if (d.offerReceived) {
+      offersReceived++;
+      if (d.offerResponded) {
+        offersResponded++;
+        // Check if responded within 7 days
+        if (d.offerReceivedAt && d.offerRespondedAt) {
+          const days = (d.offerRespondedAt.toDate?.() - d.offerReceivedAt.toDate?.()) / 86400000;
+          if (days > 7) {
+            lateOfferResponses++;
+            penalties += 10;
+          }
+        }
+      }
+    }
+
+    // Process completion
+    const stages = d.stagesCompleted || 0;
+    if (stages >= 1) {
+      processesAccepted++;
+      if (d.status === 'hired' || d.status === 'rejected' || d.status === 'withdrawn_clean') {
+        processesConcluded++;
+        if (!d.noShow && !d.withdrawnSilently) {
+          cleanProcesses++;
+        }
+      }
+      if (d.withdrawnSilently && stages >= 3) {
+        silentWithdrawals++;
+        penalties += 8;
+      }
+    }
+  });
+
+  const total     = interviewsConfirmed + offersReceived + processesAccepted;
+  const honoured  = interviewsAttended  + offersResponded + processesConcluded;
+
+  let score = total > 0 ? Math.round(100 * honoured / total) : 100;
+  score -= penalties;
+  score += cleanProcesses * 2;
+  score = Math.max(20, Math.min(100, score));
+
+  return {
+    score,
+    total,
+    honoured,
+    interviewsConfirmed,
+    interviewsAttended,
+    offersReceived,
+    offersResponded,
+    processesAccepted,
+    processesConcluded,
+    cleanProcesses,
+    penalties,
+    noShows,
+    silentWithdrawals,
+    lateOfferResponses,
+    hasEnoughData: total >= 2,
   };
-  return map[e.type] || { color: 'var(--text3)', label: e.type };
 }
 
-function fmtDate(ts) {
-  if (!ts) return '';
-  const d = ts.toDate ? ts.toDate() : new Date(ts);
-  const diff = Math.floor((Date.now() - d) / 86400000);
-  if (diff === 0) return 'Today';
-  if (diff === 1) return 'Yesterday';
-  if (diff < 30)  return `${diff} days ago`;
-  const m = Math.floor(diff / 30);
-  return `${m} month${m !== 1 ? 's' : ''} ago`;
+/* ── Ring SVG ───────────────────────────────────────────────── */
+function ScoreRing({ score, size = 120 }) {
+  const r = (size / 2) - 10;
+  const circ = 2 * Math.PI * r;
+  const dash = circ * score / 100;
+  const color = scoreColor(score);
+  return (
+    <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,.08)" strokeWidth={8}/>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={8}
+        strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
+        style={{ transition: 'stroke-dasharray .8s cubic-bezier(.4,0,.2,1)' }}/>
+    </svg>
+  );
 }
 
-function buildDims(events) {
-  const noShows      = events.filter(e => e.type === 'no_show').length;
-  const noReplies    = events.filter(e => e.type === 'no_offer_reply').length;
-  const vaults       = events.filter(e => e.type === 'vault_submitted').length;
-  const totalProc    = events.filter(e => ['interview_attended','process_concluded'].includes(e.type)).length || 1;
-  const msgScore     = noShows === 0 ? 25 : Math.max(0, 25 - noShows * 8);
-  const intScore     = noShows === 0 ? 25 : Math.max(0, 25 - noShows * 10);
-  const offerScore   = noReplies === 0 ? 20 : Math.max(0, 20 - noReplies * 10);
-  const vaultPct     = Math.min(1, vaults / totalProc);
-  const procScore    = Math.round(vaultPct * 30);
-  return [
-    { id:'r1', icon:'ico-chat',    iconColor:'#a78bfa',        label:'Message responsiveness', score:`${msgScore}/25`,   scoreColor: msgScore>=20?'var(--green)':'var(--amber)',
-      sub: noShows===0?'Responded to all mutual match messages within 7 days':`${noShows} late / missed response${noShows>1?'s':''} on record`,
-      tip: noShows===0?'Full score. You responded to every employer message within 7 days. The Hiro threshold is 7 days — late responses start reducing this dimension.':`Score deducted for ${noShows} missed or late response${noShows>1?'s':''}. Respond to all messages within 7 days to protect this dimension.` },
-    { id:'r2', icon:'ico-calendar', iconColor:'var(--text2)',  label:'Interview commitments',   score:`${intScore}/25`,   scoreColor: intScore>=20?'var(--green)':'#fb7185',
-      sub: noShows===0?'No no-shows or same-day cancellations':`${noShows} no-show${noShows>1?'s':''} on record`,
-      tip: noShows===0?'Full score. You attended every scheduled interview and gave at least 24 hours notice for any reschedules. This is one of the highest-weighted dimensions.':`Score deducted. No-shows are the hardest deduction to recover from. Give at least 24h notice for any reschedule.` },
-    { id:'r3', icon:'ico-check',   iconColor:'var(--teal)',    label:'Offer follow-through',    score:`${offerScore}/20`, scoreColor: offerScore===20?'var(--green)':'var(--amber)',
-      sub: offerScore===20?'No offer acceptances followed by withdrawals':'One or more offers not replied to within 7 days',
-      tip: offerScore===20?'Full score. Withdrawing an accepted offer after a start date is set is one of the hardest deductions to recover from. Yours is clean.':'Reply to all offers within 7 days — even to decline. Silence triggers a deduction after 7 days.' },
-    { id:'r4', icon:'ico-flash2',  iconColor:'#a78bfa',        label:'Process transparency',    score:`${procScore}/30`,  scoreColor: procScore>=25?'var(--green)':'var(--cyan)',
-      sub: vaults===0?'No Vault reports submitted yet':`Submitted ${vaults} Vault report${vaults>1?'s':''} after completed processes`,
-      tip: procScore<30?'Submitting Vault reports for completed processes would boost your score toward 100.':'Full score. All processes have a Vault report submitted.',
-      showVaultBtn: procScore < 30 },
-  ];
+/* ── Stat mini card ─────────────────────────────────────────── */
+function StatCard({ label, val, color, icon }) {
+  return (
+    <div style={{
+      background: 'var(--surface2)', border: '1px solid var(--border)',
+      borderRadius: 10, padding: '12px 14px', textAlign: 'center',
+    }}>
+      <div style={{ fontSize: 20, marginBottom: 4 }}>{icon}</div>
+      <div style={{ fontFamily: 'Manrope,sans-serif', fontSize: 22, fontWeight: 800, color, lineHeight: 1 }}>{val}</div>
+      <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4, textTransform: 'uppercase', letterSpacing: '.08em', fontWeight: 600 }}>{label}</div>
+    </div>
+  );
 }
 
+/* ── Timeline entry ─────────────────────────────────────────── */
+function AppTimeline({ apps }) {
+  if (!apps.length) return null;
+  const recent = [...apps].sort((a, b) => {
+    const ta = a.createdAt?.toDate?.() ?? 0;
+    const tb = b.createdAt?.toDate?.() ?? 0;
+    return tb - ta;
+  }).slice(0, 5);
+
+  return (
+    <div className="card" style={{ marginTop: 12 }}>
+      <div className="card-title" style={{ marginBottom: 14 }}>Recent activity</div>
+      {recent.map((app, i) => {
+        const isClean   = !app.noShow && !app.withdrawnSilently;
+        const hasIssue  = app.noShow || app.withdrawnSilently;
+        const dot = hasIssue ? 'var(--red)' : isClean && app.stagesCompleted >= 1 ? 'var(--green)' : 'var(--text3)';
+        return (
+          <div key={app.id || i} style={{
+            display: 'flex', gap: 12, padding: '10px 0',
+            borderBottom: i < recent.length - 1 ? '1px solid rgba(255,255,255,.05)' : 'none',
+          }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+              <div style={{ width: 10, height: 10, borderRadius: '50%', background: dot, flexShrink: 0, marginTop: 3 }}/>
+              {i < recent.length - 1 && <div style={{ width: 1, flex: 1, background: 'rgba(255,255,255,.06)' }}/>}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>
+                {app.jobTitle || 'Role'} — {app.companyName || 'Company'}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+                {app.noShow && <span style={{ color: 'var(--red)', fontWeight: 600 }}>No-show after confirmation · </span>}
+                {app.withdrawnSilently && <span style={{ color: '#f97316', fontWeight: 600 }}>Silent withdrawal · </span>}
+                {!hasIssue && app.stagesCompleted >= 1 && <span style={{ color: 'var(--green)', fontWeight: 600 }}>Clean process · </span>}
+                {app.status ? app.status.replace(/_/g, ' ') : 'In progress'}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── Main component ─────────────────────────────────────────── */
 export default function CandGhosting() {
-  const { navigate } = useApp();
-  const { profile }  = useAuth();
-  const [events,  setEvents]  = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [openTip, setOpenTip] = useState(null);
+  const { profile } = useAuth();
+  const { showToast } = useApp();
 
+  const [apps,    setApps]    = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tab,     setTab]     = useState('overview');
+
+  /* ── Fetch from Firestore ─────────────────────────────────── */
   useEffect(() => {
-    // FIX: reset loading state on profile change so stale score never shows
-    setLoading(true);
     if (!profile?.id) { setLoading(false); return; }
-    async function load() {
+    (async () => {
       try {
         const q = query(
-          collection(db, 'ghost_events'),
+          collection(db, 'applications'),
           where('candidateId', '==', profile.id),
           orderBy('createdAt', 'desc'),
-          limit(50)
+          limit(100),
         );
         const snap = await getDocs(q);
-        setEvents(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } catch (err) {
-        console.error('ghost_events fetch error:', err);
+        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        setApps(data);
+      } catch (e) {
+        console.error('CandGhosting fetch error:', e);
+        // Graceful degradation: show empty state, not a crash
+        setApps([]);
       } finally {
         setLoading(false);
       }
-    }
-    load();
+    })();
   }, [profile?.id]);
 
-  // FIX: derive score purely from live ghost_events — never fall back to stale profile value
-  const score      = loading ? null : calcReliabilityScore(events);
-  const scoreColor = score !== null ? getScoreColor(score) : 'var(--text3)';
-  const dims       = buildDims(events);
+  /* ── Derived stats ────────────────────────────────────────── */
+  const stats = useMemo(() => calcReliabilityScore(apps), [apps]);
 
-  const timeline = events.slice(0, 10).map(e => {
-    const ui = eventToUI(e);
-    return { color: ui.color, title: `${e.companyName || 'Employer'} · ${ui.label}`, sub: fmtDate(e.createdAt) + (e.note ? ` · ${e.note}` : '') };
-  });
+  const impact = benchImpact(stats.score);
 
-  const noShows      = events.filter(e => e.type === 'no_show').length;
-  const pendingVault = events.filter(e => e.type === 'vault_pending').length > 0;
-  const tips = [
-    { done: noShows === 0,   text: 'Always respond to match messages within 7 days' },
-    { done: noShows === 0,   text: 'Give 24h notice for any interview reschedule' },
-    { done: !pendingVault,   text: 'Submit pending Vault report for completed processes', action: () => navigate('cand-vault') },
-    { done: true,            text: 'Never withdraw an accepted offer after start date is set' },
-  ];
+  /* ── Loading ──────────────────────────────────────────────── */
+  if (loading) {
+    return (
+      <div className="view scroll" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div className="spinner-sm" style={{ width: 28, height: 28, borderWidth: 3 }}/>
+      </div>
+    );
+  }
 
+  /* ── Main render ──────────────────────────────────────────── */
   return (
-    <div className="view">
-      <div className="scroll">
-        <div style={{ maxWidth: 820 }}>
-          <div className="page-hdr" style={{ maxWidth: 820, marginBottom: 18 }}>
-            <div>
-              <div className="eyebrow">Your professional reputation</div>
-              <div className="page-title">Reliability Score</div>
-              <div className="page-sub">How you show up in the process. Visible to employers only after a mutual match.</div>
+    <div className="view scroll">
+      <div style={{ maxWidth: 720, margin: '0 auto' }}>
+
+        {/* ── Hero banner ─────────────────────────────────────── */}
+        <div style={{
+          background: `linear-gradient(135deg, ${scoreBg(stats.score)}, rgba(14,17,36,.95))`,
+          border: `1px solid ${scoreBorder(stats.score)}`,
+          borderRadius: 20, padding: '24px 28px', marginBottom: 16,
+          position: 'relative', overflow: 'hidden',
+        }}>
+          <div style={{ position: 'absolute', top: -60, right: -60, width: 220, height: 220, borderRadius: '50%',
+            background: `radial-gradient(circle, ${scoreBg(stats.score)}, transparent 70%)` }}/>
+          <div style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', gap: 24 }}>
+
+            {/* Ring + score */}
+            <div style={{ position: 'relative', flexShrink: 0 }}>
+              <ScoreRing score={stats.score} size={110}/>
+              <div style={{
+                position: 'absolute', inset: 0, display: 'flex',
+                flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <div style={{ fontFamily: 'Manrope,sans-serif', fontSize: 28, fontWeight: 800,
+                  color: scoreColor(stats.score), lineHeight: 1 }}>{stats.score}</div>
+                <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700,
+                  textTransform: 'uppercase', letterSpacing: '.08em', marginTop: 2 }}>score</div>
+              </div>
+            </div>
+
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                letterSpacing: '.14em', color: 'var(--text3)', marginBottom: 4 }}>Reliability Score</div>
+              <div style={{ fontFamily: 'Manrope,sans-serif', fontSize: 26, fontWeight: 800,
+                letterSpacing: '-0.04em', marginBottom: 4 }}>
+                {scoreEmoji(stats.score)} {scoreLabel(stats.score)}
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 10, lineHeight: 1.5 }}>
+                {stats.hasEnoughData
+                  ? `Based on ${stats.total} tracked commitment${stats.total !== 1 ? 's' : ''} — ${stats.honoured} honoured`
+                  : 'Not enough activity yet — complete more processes to build your score'}
+              </div>
+              <div style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '5px 12px', borderRadius: 999,
+                background: scoreBg(stats.score), border: `1px solid ${scoreBorder(stats.score)}`,
+                fontSize: 12, fontWeight: 600, color: impact.color,
+              }}>
+                🪑 Bench: {impact.label}
+              </div>
             </div>
           </div>
+        </div>
 
-          {/* Score hero */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 20, alignItems: 'start', marginBottom: 20 }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ position: 'relative', width: 88, height: 88 }}>
-                <svg width="88" height="88" viewBox="0 0 88 88" style={{ transform: 'rotate(-90deg)' }}>
-                  <circle cx="44" cy="44" r="36" fill="none" stroke="rgba(255,255,255,.08)" strokeWidth="8" />
-                  {score !== null && (
-                    <circle cx="44" cy="44" r="36" fill="none" stroke={scoreColor} strokeWidth="8" strokeLinecap="round"
-                      strokeDasharray="226" strokeDashoffset={String(Math.round(226 * (1 - score / 100)))}
-                      style={{ transition: 'stroke-dashoffset .8s ease' }} />
-                  )}
-                </svg>
-                <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-                  {loading ? (
-                    <div style={{ fontSize: 11, color: 'var(--text3)' }}>…</div>
-                  ) : (
-                    <>
-                      <div style={{ fontFamily: "'Manrope',sans-serif", fontSize: 24, fontWeight: 800, color: scoreColor }}>{score}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>/100</div>
-                    </>
-                  )}
-                </div>
-              </div>
-              {!loading && score !== null && (
-                <>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: scoreColor, marginTop: 6 }}>{getScoreLabel(score)}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text3)' }}>{getPercentile(score)}</div>
-                </>
-              )}
+        {/* ── Tab strip ─────────────────────────────────────── */}
+        <div className="tab-strip" style={{ marginBottom: 16 }}>
+          {['overview', 'breakdown', 'history'].map(t => (
+            <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`}
+              onClick={() => setTab(t)} style={{ textTransform: 'capitalize' }}>
+              {t}
+            </button>
+          ))}
+        </div>
+
+        {/* ════ OVERVIEW tab ════════════════════════════════════ */}
+        {tab === 'overview' && (
+          <>
+            {/* Stat grid */}
+            <div className="g4" style={{ marginBottom: 14 }}>
+              <StatCard label="Interviews" val={`${stats.interviewsAttended}/${stats.interviewsConfirmed}`}
+                color="var(--cyan)" icon="📅"/>
+              <StatCard label="Offers responded" val={`${stats.offersResponded}/${stats.offersReceived}`}
+                color="#a78bfa" icon="📬"/>
+              <StatCard label="Clean processes" val={stats.cleanProcesses}
+                color="var(--green)" icon="✅"/>
+              <StatCard label="Penalties" val={`−${stats.penalties}`}
+                color={stats.penalties > 0 ? 'var(--red)' : 'var(--text3)'} icon="⚠️"/>
             </div>
 
-            <div>
-              <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>
-                Last updated {new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
+            {/* Score formula explanation */}
+            <div className="card" style={{ marginBottom: 12 }}>
+              <div className="card-title" style={{ marginBottom: 12 }}>How your score is calculated</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {[
-                  [events.length > 0 ? `${Math.round(events.filter(e=>!['no_show','no_offer_reply','silent_withdraw'].includes(e.type)).length / events.length * 100)}%` : '—', events.length > 0 ? 'var(--green)' : 'var(--text3)', 'Response rate'],
-                  [String(events.filter(e => e.type === 'no_show').length), events.filter(e => e.type === 'no_show').length === 0 ? 'var(--green)' : '#fb7185', 'Ghost flags'],
-                  ['—', 'var(--text3)', 'Response speed'],
-                ].map(([v, c, l]) => {
-                  const rgb = c === 'var(--green)' ? '34,197,94' : c === '#fb7185' ? '248,113,133' : '90,91,114';
-                  return (
-                    <div key={l} style={{ padding:'9px 11px', borderRadius:'var(--r)', background:`rgba(${rgb},.07)`, border:`1px solid rgba(${rgb},.2)`, textAlign:'center' }}>
-                      <div style={{ fontFamily:"'Manrope',sans-serif", fontSize:20, fontWeight:800, color:c }}>{loading ? '…' : v}</div>
-                      <div style={{ fontSize:10, color:'var(--text3)' }}>{l}</div>
-                    </div>
-                  );
-                })}
-              </div>
-              {!loading && score !== null && (
-                <div style={{ padding:'10px 12px', borderRadius:'var(--r)', background:`rgba(${score>=75?'34,197,94':'245,158,11'},.07)`, border:`1px solid rgba(${score>=75?'34,197,94':'245,158,11'},.25)`, fontSize:12, color:'var(--text2)', lineHeight:1.6 }}>
-                  {score >= 90
-                    ? <>⚡ Your reliability score unlocks <strong style={{ color:'var(--green)' }}>2.3× faster employer responses</strong> and priority placement in employer searches on Hiro.</>
-                    : score >= 75
-                    ? <>⚡ Good standing. Keep attending interviews and responding to offers to push above 90 and unlock priority placement.</>
-                    : <>⚠️ Your score is affecting match visibility. Address outstanding flags to recover your standing.</>
-                  }
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Breakdown */}
-          <div className="card" style={{ marginBottom: 14 }}>
-            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
-              <div className="card-title" style={{ marginBottom:0 }}>Score breakdown</div>
-              <span style={{ fontSize:12, color:'var(--text3)' }}>Click any dimension to learn more</span>
-            </div>
-            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-              {dims.map(d => (
-                <div key={d.id}>
-                  <div className="tip-item" onClick={() => setOpenTip(openTip===d.id?null:d.id)}
-                    style={{ borderColor: d.scoreColor==='var(--green)'?'rgba(34,197,94,.2)':'rgba(56,189,248,.2)', cursor:'pointer' }}>
-                    <span className={`ico ${d.icon}`} style={{ width:15, height:15, background:d.iconColor, flexShrink:0 }} />
-                    <div style={{ flex:1 }}>
-                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                        <span style={{ fontWeight:700, color:d.scoreColor }}>{d.label}</span>
-                        <span style={{ fontFamily:"'Manrope',sans-serif", fontWeight:800, color:d.scoreColor }}>{d.score}</span>
-                      </div>
-                      <div style={{ fontSize:12, color:'var(--text3)', marginTop:2 }}>{d.sub}</div>
-                    </div>
-                  </div>
-                  {openTip === d.id && (
-                    <div style={{ padding:'9px 12px', borderRadius:'var(--r)', background:`rgba(${d.scoreColor==='var(--green)'?'34,197,94':'56,189,248'},.05)`, border:`1px solid rgba(${d.scoreColor==='var(--green)'?'34,197,94':'56,189,248'},.15)`, fontSize:12, color:'var(--text2)', marginTop:-4, lineHeight:1.65 }}>
-                      {d.tip}
-                      {d.showVaultBtn && <button className="btn btn-ghost btn-sm" style={{ marginTop:6 }} onClick={() => navigate('cand-vault')}>Submit pending report →</button>}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Process history */}
-          <div className="card" style={{ marginBottom: 14 }}>
-            <div className="card-title">Recent process history</div>
-            {loading ? (
-              <div style={{ fontSize:12, color:'var(--text3)', padding:'8px 0' }}>Loading history…</div>
-            ) : timeline.length === 0 ? (
-              <div style={{ fontSize:12, color:'var(--text3)', padding:'8px 0' }}>No history yet. Your commitment record will appear here as you engage with employers.</div>
-            ) : (
-              <div className="ghost-timeline">
-                {timeline.map((item, i) => (
-                  <div key={i} className="gt-item">
-                    <div className="gt-dot-col">
-                      <div className="gt-dot" style={{ background: item.color }} />
-                      {i < timeline.length - 1 && <div className="gt-line" />}
-                    </div>
-                    <div>
-                      <div style={{ fontSize:12, fontWeight:700 }}>{item.title}</div>
-                      <div style={{ fontSize:12, color:'var(--text3)' }}>{item.sub}</div>
-                    </div>
+                  { label: 'Base calculation', val: stats.total > 0
+                    ? `${stats.honoured} / ${stats.total} commitments honoured = ${Math.round(100 * stats.honoured / (stats.total || 1))}%`
+                    : 'No commitments tracked yet', color: 'var(--cyan)' },
+                  { label: 'Clean process bonus', val: `+${stats.cleanProcesses * 2} pts (${stats.cleanProcesses} × 2)`, color: 'var(--green)' },
+                  { label: 'Penalties applied', val: stats.penalties > 0
+                    ? `−${stats.penalties} pts (${stats.noShows} no-show, ${stats.silentWithdrawals} silent exit, ${stats.lateOfferResponses} late response)`
+                    : 'None — keep it up!', color: stats.penalties > 0 ? 'var(--red)' : 'var(--text3)' },
+                  { label: 'Floor', val: 'Minimum score is always 20', color: 'var(--text3)' },
+                ].map(row => (
+                  <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between',
+                    fontSize: 13, padding: '7px 0', borderBottom: '1px solid rgba(255,255,255,.05)' }}>
+                    <span style={{ color: 'var(--text2)' }}>{row.label}</span>
+                    <span style={{ fontWeight: 600, color: row.color }}>{row.val}</span>
                   </div>
                 ))}
-              </div>
-            )}
-          </div>
-
-          {/* Tips */}
-          <div className="card">
-            <div className="card-title">Protect your score</div>
-            <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
-              {tips.map((tip, i) => (
-                <div key={i} className={`tip-item${tip.done?' done':''}`} onClick={tip.action} style={{ cursor: tip.action?'pointer':'default' }}>
-                  {tip.done
-                    ? <span className="ico ico-check" style={{ width:13, height:13, background:'var(--green)', flexShrink:0 }} />
-                    : <span style={{ fontSize:14, flexShrink:0 }}>○</span>
-                  }
-                  <div>{tip.text}{!tip.done && tip.action && <span style={{ color:'var(--cyan)', cursor:'pointer' }}> → Submit now</span>}</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between',
+                  fontSize: 14, fontWeight: 800, color: scoreColor(stats.score), paddingTop: 4 }}>
+                  <span>Final score</span>
+                  <span>{stats.score} / 100</span>
                 </div>
-              ))}
+              </div>
             </div>
-          </div>
 
+            {/* Bench impact */}
+            <div className="card">
+              <div className="card-title" style={{ marginBottom: 12 }}>Score thresholds & Bench impact</div>
+              {[
+                { range: '90–100', label: 'Excellent', color: 'var(--green)', impact: 'Priority Bench access + first-mover windows' },
+                { range: '75–89', label: 'Good',      color: '#2dd4bf',       impact: 'Standard Bench access' },
+                { range: '60–74', label: 'Fair',      color: 'var(--amber)', impact: 'Reduced Bench visibility' },
+                { range: '45–59', label: 'Caution',   color: '#f97316',      impact: 'Bench access suspended / limited' },
+                { range: '< 45',  label: 'Poor',      color: 'var(--red)',   impact: 'Bench credits revoked — warning on profile' },
+              ].map(row => {
+                const active = (
+                  (row.range === '90–100' && stats.score >= 90) ||
+                  (row.range === '75–89'  && stats.score >= 75 && stats.score < 90) ||
+                  (row.range === '60–74'  && stats.score >= 60 && stats.score < 75) ||
+                  (row.range === '45–59'  && stats.score >= 45 && stats.score < 60) ||
+                  (row.range === '< 45'   && stats.score < 45)
+                );
+                return (
+                  <div key={row.range} style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px',
+                    borderRadius: 8, marginBottom: 4,
+                    background: active ? `${scoreBg(stats.score)}` : 'transparent',
+                    border: active ? `1px solid ${scoreBorder(stats.score)}` : '1px solid transparent',
+                  }}>
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: row.color, flexShrink: 0 }}/>
+                    <div style={{ width: 50, fontSize: 12, fontWeight: 700, color: row.color }}>{row.range}</div>
+                    <div style={{ width: 64, fontSize: 12, fontWeight: 600, color: active ? row.color : 'var(--text2)' }}>{row.label}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text3)', flex: 1 }}>{row.impact}</div>
+                    {active && <div style={{ fontSize: 11, fontWeight: 700, color: row.color }}>← You</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {/* ════ BREAKDOWN tab ══════════════════════════════════ */}
+        {tab === 'breakdown' && (
+          <>
+            <div className="card" style={{ marginBottom: 12 }}>
+              <div className="card-title" style={{ marginBottom: 14 }}>Commitment breakdown</div>
+              {[
+                { label: 'Interviews confirmed', kept: stats.interviewsAttended, total: stats.interviewsConfirmed, color: 'var(--cyan)' },
+                { label: 'Offers responded', kept: stats.offersResponded, total: stats.offersReceived, color: '#a78bfa' },
+                { label: 'Processes concluded cleanly', kept: stats.processesConcluded, total: stats.processesAccepted, color: 'var(--green)' },
+              ].map(row => {
+                const pct = row.total > 0 ? Math.round(row.kept / row.total * 100) : 100;
+                return (
+                  <div key={row.label} style={{ marginBottom: 16 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
+                      <span style={{ color: 'var(--text2)' }}>{row.label}</span>
+                      <span style={{ fontWeight: 700, color: row.color }}>{row.kept}/{row.total} · {pct}%</span>
+                    </div>
+                    <div style={{ height: 6, borderRadius: 999, background: 'rgba(255,255,255,.08)', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', borderRadius: 999, width: `${pct}%`,
+                        background: row.color, transition: 'width .6s' }}/>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="card">
+              <div className="card-title" style={{ marginBottom: 12 }}>Penalty events</div>
+              {stats.noShows === 0 && stats.silentWithdrawals === 0 && stats.lateOfferResponses === 0 ? (
+                <div style={{ textAlign: 'center', padding: '20px 0', color: 'var(--green)', fontSize: 14, fontWeight: 600 }}>
+                  🎉 No penalty events on record
+                </div>
+              ) : (
+                [
+                  { label: 'No-shows after confirmation', count: stats.noShows, penalty: 15, color: 'var(--red)' },
+                  { label: 'Silent withdrawals (3+ rounds)', count: stats.silentWithdrawals, penalty: 8, color: '#f97316' },
+                  { label: 'Late offer responses (>7 days)', count: stats.lateOfferResponses, penalty: 10, color: 'var(--amber)' },
+                ].filter(r => r.count > 0).map(row => (
+                  <div key={row.label} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '10px 12px', borderRadius: 8, marginBottom: 6,
+                    background: 'rgba(251,113,133,.06)', border: '1px solid rgba(251,113,133,.15)',
+                  }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{row.label}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text3)' }}>{row.count} event{row.count !== 1 ? 's' : ''}</div>
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: row.color }}>
+                      −{row.count * row.penalty} pts
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </>
+        )}
+
+        {/* ════ HISTORY tab ════════════════════════════════════ */}
+        {tab === 'history' && (
+          <>
+            {apps.length === 0 ? (
+              <div className="card" style={{ textAlign: 'center', padding: '40px 20px' }}>
+                <div style={{ fontSize: 36, marginBottom: 12 }}>📂</div>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>No applications tracked yet</div>
+                <div style={{ fontSize: 13, color: 'var(--text3)', lineHeight: 1.6 }}>
+                  As you apply and interview through Hiro, your commitment history will appear here.
+                </div>
+              </div>
+            ) : (
+              <AppTimeline apps={apps}/>
+            )}
+          </>
+        )}
+
+        {/* ── Footer disclaimer ───────────────────────────────── */}
+        <div style={{
+          marginTop: 20, padding: '12px 16px', borderRadius: 10,
+          background: 'rgba(255,255,255,.03)', border: '1px solid var(--border)',
+          fontSize: 12, color: 'var(--text3)', lineHeight: 1.6,
+        }}>
+          <strong style={{ color: 'var(--text2)' }}>About this score</strong> — Your Reliability Score is an
+          algorithmic signal based on response-rate data and commitment history tracked on Hiro. It is not a
+          legal finding or professional reference. You can contest any event via Settings → Score dispute.
         </div>
       </div>
     </div>

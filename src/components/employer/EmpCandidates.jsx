@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { collection, query, where, onSnapshot, doc, updateDoc, addDoc, serverTimestamp, getDocs } from 'firebase/firestore';
+import { logGhostEvent, ghostTypeForMove } from '../../lib/ghostEvents';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
@@ -448,6 +449,10 @@ export default function EmpCandidates() {
         read: false,
         createdAt: serverTimestamp(),
       });
+      // Log ghost event: employer made first contact with this candidate
+      logGhostEvent(cand.id, profile.id, activeJob.id, 'first_contact', {
+        stage: 'matched',
+      });
       showToast(`Interest expressed in ${cand.name} — they'll be notified 🎉`, 'success');
     } catch (err) {
       console.error('Express interest error:', err);
@@ -458,7 +463,15 @@ export default function EmpCandidates() {
   async function handleStageChange(candId, stage) {
     const app = applications.find(a => a.candidateId === candId && a.jobId === activeJob?.id);
     if (app) {
+      const prevStage = app.stage || 'matched';
       await updateDoc(doc(db, 'applications', app.id), { stage, updatedAt: serverTimestamp() });
+      // Log ghost event for this stage move
+      const ghostType = ghostTypeForMove(prevStage, stage);
+      if (ghostType && profile?.id && activeJob?.id) {
+        logGhostEvent(candId, profile.id, activeJob.id, ghostType, {
+          stage, prevStage,
+        });
+      }
     }
   }
 

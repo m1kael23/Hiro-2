@@ -358,3 +358,77 @@ export async function checkAndNotifyPulseDue(profile, updateProfile) {
     await notifyPulseDue({ candidateId: profile.id, daysSinceLast: Math.floor(daysSinceLast) });
   }
 }
+
+// ─── 14. Blind match signal received (candidate notified) ─────────────────────
+// Fired by BlindMatchContext when employer signals interest.
+
+export async function notifySignalReceived({ recipientId, companyName, jobTitle, matchId }) {
+  await push(
+    recipientId,
+    'bench_interest',
+    `⚡ ${companyName || 'A company'} is interested`,
+    `They matched your DNA for ${jobTitle || 'a role'} — accept to reveal both profiles and open a conversation.`,
+    'cand-blind-matches',
+    { companyName, jobTitle, matchId }
+  );
+}
+
+// ─── 15. Interview scheduled (candidate notified) ─────────────────────────────
+// Fired by InterviewScheduler after writing the interviews doc.
+
+export async function notifyInterviewScheduled({ recipientId, jobTitle, date, time, interviewId }) {
+  let friendlyDate = date;
+  try {
+    const [y, m, d] = date.split('-').map(Number);
+    friendlyDate = new Date(y, m - 1, d).toLocaleDateString('en-GB', {
+      weekday: 'short', day: 'numeric', month: 'short',
+    });
+  } catch { /* use raw date */ }
+
+  await push(
+    recipientId,
+    'application',
+    `📅 Interview confirmed — ${jobTitle || 'your role'}`,
+    `Scheduled for ${friendlyDate} at ${time}. Check your Applications for full details.`,
+    'cand-apps',
+    { jobTitle, date, time, interviewId }
+  );
+}
+
+// ─── 16. New DNA match (both sides) ───────────────────────────────────────────
+// Higher-level wrapper — prefer notifyMutualMatch for confirmed mutual matches.
+
+export async function notifyNewMatch({ recipientId, matchedWith, dnaScore, mode }) {
+  await push(
+    recipientId,
+    'match',
+    `🧬 New DNA match — ${Math.round(dnaScore ?? 0)}% fit`,
+    `You've been matched with ${matchedWith || 'a new connection'} based on Work DNA alignment.`,
+    mode === 'employer' ? 'emp-blind-matches' : 'cand-blind-matches',
+    { matchedWith, dnaScore }
+  );
+}
+
+// ─── 17. Ghost / Reliability score alert (alias for notifyGhostFlag) ──────────
+// Used by CandGhosting when score drops below a threshold.
+
+export async function notifyGhostScoreAlert({ recipientId, score, mode }) {
+  await notifyGhostFlag({
+    targetUserId: recipientId,
+    mode: mode === 'employer' ? 'employer' : 'candidate',
+    context: `score now ${Math.round(score)}`,
+  });
+}
+
+// ─── 18. Offer received (candidate notified) ──────────────────────────────────
+
+export async function notifyOfferReceived({ recipientId, companyName, jobTitle, offerId }) {
+  await push(
+    recipientId,
+    'offer_deadline',
+    `🎉 Offer received — ${companyName || 'an employer'}`,
+    `You have an offer for ${jobTitle || 'a role'}. Respond within 7 days to protect your Reliability Score.`,
+    'cand-apps',
+    { companyName, jobTitle, offerId }
+  );
+}

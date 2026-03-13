@@ -4,6 +4,7 @@ import { AuthProvider } from './context/AuthContext'
 import { AppProvider } from './context/AppContext'
 import { NotificationProvider } from './context/NotificationContext'
 import { MessageProvider } from './context/MessageContext'
+import { BlindMatchProvider } from './context/BlindMatchContext'
 import ErrorBoundary from './components/shared/ErrorBoundary'
 import App from './App'
 import './styles/globals.css'
@@ -15,7 +16,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
         <AppProvider>
           <NotificationProvider>
             <MessageProvider>
-              <App />
+              <BlindMatchProvider>
+                <App />
+              </BlindMatchProvider>
             </MessageProvider>
           </NotificationProvider>
         </AppProvider>
