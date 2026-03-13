@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { collection, query, where, onSnapshot, doc, updateDoc, setDoc, addDoc, serverTimestamp, getDocs } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc, updateDoc, addDoc, serverTimestamp, getDocs } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
@@ -9,10 +9,6 @@ import {
   getScoreColour,
   getScoreLabel,
 } from '../../lib/matchStore';
-import {
-  notifyEmployerInterest,
-  notifyMutualMatch,
-} from '../../services/notificationService';
 
 const STAGES = ['Matched', 'Screening', 'Round 1', 'Round 2', 'Pre-offer', 'Offer'];
 
@@ -340,8 +336,14 @@ export default function EmpCandidates() {
       for (const chunk of chunks) {
         try {
           const snap = await getDocs(query(collection(db, 'users'), where('id', 'in', chunk)));
-          snap.docs.forEach(d => { if (!cands.find(c => c.id === d.id)) cands.push({ id: d.id, ...d.data() }); });
-        } catch (e) { console.error('EmpCandidates chunk error', e); }
+          snap.docs.forEach(d => {
+            if (!cands.find(c => c.id === d.id)) {
+              cands.push({ id: d.id, ...d.data() });
+            }
+          });
+        } catch (e) {
+          console.error("Error fetching candidate chunk:", e);
+        }
       }
       setCandidates(cands);
       setLoading(false);
@@ -410,54 +412,43 @@ export default function EmpCandidates() {
 
   // ── Express interest: notify candidate, fire mutual match if both sides are in ──
   async function handleExpressInterest(cand) {
-    if (!activeJob || !profile?.id) return;
+    if (!activeJob) return;
     const app = applications.find(a => a.candidateId === cand.id && a.jobId === activeJob.id);
-    const willBeMutual = cand.candidateExpressedInterest; // candidate already in
-
     try {
-      if (app) {
-        await updateDoc(doc(db, 'applications', app.id), {
+      if (existing) {
+        await updateDoc(appRef, {
           employerExpressedInterest: true,
-          ...(willBeMutual ? { status: 'matched' } : {}),
           updatedAt: serverTimestamp(),
         });
       } else {
         const docId = `${cand.id}_${activeJob.id}`;
         await setDoc(doc(db, 'applications', docId), {
           id: docId,
-          jobId:       activeJob.id,
+          jobId: activeJob.id,
           candidateId: cand.id,
-          employerId:  profile.id,
-          matchScore:  cand.scores.overall,
-          dnaScore:    cand.scores.dna,
+          employerId: profile.id,
+          matchScore: cand.scores.overall,
+          dnaScore: cand.scores.dna,
           skillsScore: cand.scores.skills,
-          employerExpressedInterest:  true,
+          employerExpressedInterest: true,
           candidateExpressedInterest: false,
           status: 'matched',
-          stage:  'Matched',
+          stage: 'Matched',
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
       }
-
-      if (willBeMutual) {
-        // 🤝 Both sides in — fire mutual match notification for both users
-        await notifyMutualMatch({
-          candidateId: cand.id,
-          employerId:  profile.id,
-          jobTitle:    activeJob.title,
-          companyName: profile.company_name || 'An employer',
-        });
-        showToast(`🤝 Mutual match with ${cand.name}! Both sides notified.`, 'success');
-      } else {
-        // ✨ Only employer in — notify candidate of interest
-        await notifyEmployerInterest({
-          candidateId: cand.id,
-          companyName: profile.company_name || 'An employer',
-          jobTitle:    activeJob.title,
-        });
-        showToast(`Interest expressed in ${cand.name} — they'll be notified 🎉`, 'success');
-      }
+      // Notify candidate
+      await addDoc(collection(db, 'notifications'), {
+        userId: cand.id,
+        title: '✨ An employer is interested in you',
+        message: `${profile?.company_name || 'An employer'} expressed interest in you for the ${activeJob.title} role.`,
+        type: 'match',
+        route: 'cand-matches',
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+      showToast(`Interest expressed in ${cand.name} — they'll be notified 🎉`, 'success');
     } catch (err) {
       console.error('Express interest error:', err);
       showToast('Failed to express interest — try again', 'error');
@@ -466,7 +457,9 @@ export default function EmpCandidates() {
 
   async function handleStageChange(candId, stage) {
     const app = applications.find(a => a.candidateId === candId && a.jobId === activeJob?.id);
-    if (app) await updateDoc(doc(db, 'applications', app.id), { stage, updatedAt: serverTimestamp() });
+    if (app) {
+      await updateDoc(doc(db, 'applications', app.id), { stage, updatedAt: serverTimestamp() });
+    }
   }
 
   function handleMessage(cand) {

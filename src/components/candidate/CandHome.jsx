@@ -3,7 +3,7 @@ import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
-import { scoreJobForCandidate, DEFAULT_CANDIDATE } from '../../lib/matchStore';
+import { scoreJobForCandidate } from '../../lib/matchStore';
 
 export default function CandHome() {
   const { navigate, setSelectedEmployerId } = useApp();
@@ -14,7 +14,8 @@ export default function CandHome() {
   const [loading, setLoading] = useState(true);
   const [recentApps, setRecentApps] = useState([]);
 
-  const candidate = profile || DEFAULT_CANDIDATE;
+  // Only score against real profile — never display fake DEFAULT_CANDIDATE data
+  const candidate = profile ?? null;
 
   // Fetch recent applications for activity feed
   useEffect(() => {
@@ -191,9 +192,9 @@ export default function CandHome() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 1, background: 'var(--border)', borderRadius: 'var(--r)', overflow: 'hidden', marginBottom: 16 }}>
             {[
               { label: 'Profile', val: `${profileStrength}%`, color: '#a78bfa', sub: profileStrength >= 80 ? 'Strong profile' : profileStrength >= 50 ? 'Add more details' : 'Complete your profile', subColor: profileStrength >= 80 ? 'var(--green)' : 'var(--amber)', route: 'cand-profile' },
-              { label: 'Matches', val: loading ? '...' : scoredJobs.length.toString(), color: 'var(--green)', sub: '12 new today', subColor: 'var(--green)', route: 'cand-matches' },
-              { label: 'Views', val: '18', color: 'var(--cyan)', sub: '↑ +5 this week', subColor: 'var(--green)', route: null },
-              { label: 'Work DNA', val: '97%', color: '#f9a8d4', sub: 'Active · Strategist', subColor: '#f9a8d4', route: 'cand-work-dna' },
+              { label: 'Matches', val: loading ? '...' : scoredJobs.length.toString(), color: 'var(--green)', sub: `${scoredJobs.filter(j => j.scores?.overall >= 80).length} strong fits`, subColor: 'var(--green)', route: 'cand-matches' },
+              { label: 'Views', val: profile?.profile_views != null ? String(profile.profile_views) : '—', color: 'var(--cyan)', sub: 'Profile views', subColor: 'var(--text3)', route: null },
+              { label: 'Work DNA', val: profile?.dna ? 'Active' : 'Not set', color: '#f9a8d4', sub: profile?.archetype || (profile?.dna ? 'DNA complete' : 'Complete DNA →'), subColor: '#f9a8d4', route: 'cand-work-dna' },
             ].map(({ label, val, color, sub, subColor, route }) => (
               <div key={label} style={{ background: 'var(--bg2)', padding: '12px 14px', cursor: route ? 'pointer' : 'default' }}
                 onClick={() => route && navigate(route)}>

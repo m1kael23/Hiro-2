@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { useApp } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
+import { storage } from '../../firebase';
 
 export default function EmpCompany() {
   const { navigate, showToast } = useApp();
@@ -68,7 +70,7 @@ export default function EmpCompany() {
     }
   };
 
-  const handleFileUpload = (e, type) => {
+  const handleFileUpload = async (e, type) => {
     const file = e.target.files[0];
     if (!file) return;
 
@@ -77,15 +79,24 @@ export default function EmpCompany() {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
+    try {
+      const uid = profile?.id || 'unknown';
+      const path = type === 'logo'
+        ? `company/${uid}/logo_${Date.now()}`
+        : `company/${uid}/culture_${Date.now()}`;
+      const storageRef = ref(storage, path);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
       if (type === 'logo') {
-        setLogoUrl(reader.result);
-      } else if (type === 'culture') {
-        setCulturePhotos(prev => [...prev, reader.result].slice(0, 6));
+        setLogoUrl(url);
+      } else {
+        setCulturePhotos(prev => [...prev, url].slice(0, 6));
       }
-    };
-    reader.readAsDataURL(file);
+      showToast('Image uploaded ✓', 'success');
+    } catch (err) {
+      console.error('Upload error:', err);
+      showToast('Upload failed — check Firebase Storage rules', 'error');
+    }
   };
 
   const removeCulturePhoto = (index) => {

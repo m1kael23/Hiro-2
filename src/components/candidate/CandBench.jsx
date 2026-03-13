@@ -99,7 +99,7 @@ export default function CandBench() {
   }
 
   // ─ Preview card derivations ─────────────────────────────────────────────────────
-  const nameParts      = (profile?.full_name || 'Jordan Mitchell').split(' ');
+  const nameParts      = (profile?.full_name || '').split(' ');
   const previewInitials = (nameParts[0]?.[0] ?? '') + (nameParts[1]?.[0] ?? '');
   const previewTitle   = profile?.job_title || 'Senior Product Manager';
   const yrs            = profile?.years_experience ?? null;
@@ -133,7 +133,7 @@ export default function CandBench() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: 20 }}>
               {[
                 [stats.views   > 0 ? String(stats.views)   : '—', 'var(--teal)',  'Bench views',       'this week'],
-                ['18h',                                              'var(--green)', 'Avg response time',  'from matched employers'],
+                ['—',                                               'var(--green)', 'Avg response time',  'from matched employers'],
                 [stats.invites > 0 ? String(stats.invites) : '—', '#a78bfa',     'Interview invites',  'sent this week'],
               ].map(([v, c, l, sub]) => (
                 <div key={l} style={{ textAlign: 'center', ...(l !== 'Bench views' ? { borderLeft: '1px solid rgba(255,255,255,.07)', borderRight: l === 'Avg response time' ? '1px solid rgba(255,255,255,.07)' : 'none' } : {}) }}>

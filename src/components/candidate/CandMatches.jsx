@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { collection, query, where, onSnapshot, doc, setDoc, serverTimestamp, addDoc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
@@ -10,6 +10,7 @@ import {
   getScoreColour,
   getScoreLabel,
 } from '../../lib/matchStore';
+import { notifyInterestExpressed } from '../../lib/notify';
 
 // ─── Score ring ──────────────────────────────────────────
 function ScoreRing({ value, size = 44, color }) {
@@ -109,7 +110,7 @@ function MatchCard({ job, isSelected, onClick }) {
 }
 
 // ─── Detail panel (right side) ───────────────────────────
-function DetailPanel({ job, interested, applied, onInterest, onApply }) {
+function DetailPanel({ job, interested, applied, onInterest, onApply, candidate }) {
   const { navigate, setSelectedEmployerId } = useApp();
   const sc        = job.scores;
   const col       = getScoreColour(sc.overall);
@@ -214,7 +215,8 @@ function DetailPanel({ job, interested, applied, onInterest, onApply }) {
         <div style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:'.1em', color:'var(--text3)', marginBottom:8 }}>Skills match breakdown</div>
         <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
           {job.skillsRequired.map(skill => {
-            const has = DEFAULT_CANDIDATE.skills.map(s => s.toLowerCase()).includes(skill.toLowerCase());
+            const candSkills = (candidate?.skills || []).map(s => s.toLowerCase());
+            const has = candSkills.includes(skill.toLowerCase());
             return (
               <span key={skill} style={{ padding:'4px 11px', borderRadius:'var(--rp)', fontSize:12, fontWeight:600, background: has ? 'rgba(34,197,94,.1)' : 'rgba(251,113,133,.08)', border:`1px solid ${has ? 'rgba(34,197,94,.28)' : 'rgba(251,113,133,.22)'}`, color: has ? 'var(--green)' : 'var(--red)' }}>
                 {has ? '✓' : '–'} {skill}
@@ -222,7 +224,8 @@ function DetailPanel({ job, interested, applied, onInterest, onApply }) {
             );
           })}
           {job.skillsNice.map(skill => {
-            const has = DEFAULT_CANDIDATE.skills.map(s => s.toLowerCase()).includes(skill.toLowerCase());
+            const candSkills = (candidate?.skills || []).map(s => s.toLowerCase());
+            const has = candSkills.includes(skill.toLowerCase());
             return (
               <span key={skill} style={{ padding:'4px 11px', borderRadius:'var(--rp)', fontSize:12, fontWeight:500, background:'rgba(255,255,255,.04)', border:'1px solid var(--border)', color: has ? 'var(--cyan)' : 'var(--text3)' }}>
                 {has ? '✓ ' : ''}{skill} <span style={{ opacity:.5 }}>(nice)</span>
@@ -237,7 +240,7 @@ function DetailPanel({ job, interested, applied, onInterest, onApply }) {
         <span style={{ fontWeight:700, color: sc.salaryFit==='great' ? 'var(--green)' : sc.salaryFit==='ok' ? 'var(--amber)' : 'var(--red)' }}>
           {sc.salaryFit==='great' ? '✓ Salary match' : sc.salaryFit==='ok' ? '~ Salary close' : '⚠ Salary stretch'}
         </span>
-        {' '}— Role {job.salary} · Your target £{DEFAULT_CANDIDATE.salaryMin}–{DEFAULT_CANDIDATE.salaryMax}k
+        {' '}— Role {job.salary}{candidate?.salaryMin ? ` · Your target £${candidate.salaryMin}–${candidate.salaryMax || candidate.salaryMin}k` : ''}
       </div>
 
       {/* ── Quick stats ────────────────────────────── */}
@@ -313,8 +316,7 @@ export default function CandMatches() {
         return {
           id: doc.id,
           ...data,
-          employerId: data.employerId || '', // Ensure employerId is present
-          // Ensure fields exist for matching engine
+          employerId: data.employerId || '',
           dnaPrefs: data.dnaPrefs || [50, 50, 50, 50, 50, 50, 50],
           skillsRequired: data.skillsRequired || [],
           skillsNice: data.skillsNice || [],
@@ -331,11 +333,14 @@ export default function CandMatches() {
         };
       });
       setDbJobs(jobs);
+      // If user has no profile yet, unblock loading here so they still see the list
+      if (!profile?.id) setLoading(false);
     }, (error) => {
       console.error('Error fetching jobs:', error);
+      setLoading(false);
     });
     return () => unsubscribe();
-  }, []);
+  }, [profile?.id]);
 
   // Fetch candidate's applications
   useEffect(() => {
@@ -437,26 +442,37 @@ export default function CandMatches() {
       await setDoc(appRef, {
         id: appId,
         jobId: jobId,
-        candidateId: profile.id,
-        employerId: job.employerId,
+        candidateId:               profile.id,
+        employerId:                job.employerId,
         candidateExpressedInterest: true,
-        status: 'pending',
-        updatedAt: serverTimestamp(),
-        createdAt: serverTimestamp()
+        candidateEmail:            profile.email || null,
+        jobTitle:                  job.title || job.co || null,
+        status:                    'pending',
+        updatedAt:                 serverTimestamp(),
+        createdAt:                 serverTimestamp()
       }, { merge: true });
 
-      // Create notification for employer
+      // Read the post-write state to detect mutual match
+      const snap = await getDoc(appRef);
+      const appState = snap.data() || {};
+
+      // Look up employer email for email delivery
+      let employerEmail = null;
       if (job.employerId) {
-        await addDoc(collection(db, 'notifications'), {
-          userId: job.employerId,
-          title: 'New Interest!',
-          message: `${profile.full_name || 'A candidate'} is interested in your ${job.title} role.`,
-          type: 'interest',
-          route: 'emp-candidates',
-          read: false,
-          createdAt: serverTimestamp()
-        });
+        try {
+          const empSnap = await getDoc(doc(db, 'users', job.employerId));
+          employerEmail = empSnap.data()?.email || null;
+        } catch (_) {}
       }
+
+      await notifyInterestExpressed({
+        app:            appState,
+        candidateName:  profile.full_name || null,
+        jobTitle:       job.title || job.co || 'this role',
+        companyName:    job.co || job.companyName || 'the company',
+        candidateEmail: profile.email || null,
+        employerEmail,
+      });
 
       showToast(`Interest sent to ${job?.co || 'Company'} ✓`, 'success');
     } catch (err) {
@@ -500,27 +516,36 @@ export default function CandMatches() {
       await setDoc(appRef, {
         id: appId,
         jobId: jobId,
-        candidateId: profile.id,
-        employerId: job.employerId,
+        candidateId:               profile.id,
+        employerId:                job.employerId,
         candidateExpressedInterest: true,
-        status: 'applied',
-        stage: 'screen',
-        updatedAt: serverTimestamp(),
-        createdAt: serverTimestamp()
+        candidateEmail:            profile.email || null,
+        jobTitle:                  job.title || null,
+        status:                    'applied',
+        stage:                     'screen',
+        updatedAt:                 serverTimestamp(),
+        createdAt:                 serverTimestamp()
       }, { merge: true });
 
-      // Create notification for employer
+      const snap = await getDoc(appRef);
+      const appState = snap.data() || {};
+
+      let employerEmail = null;
       if (job.employerId) {
-        await addDoc(collection(db, 'notifications'), {
-          userId: job.employerId,
-          title: 'New Application!',
-          message: `${profile.full_name || 'A candidate'} applied for your ${job.title} role.`,
-          type: 'application',
-          route: 'emp-pipeline',
-          read: false,
-          createdAt: serverTimestamp()
-        });
+        try {
+          const empSnap = await getDoc(doc(db, 'users', job.employerId));
+          employerEmail = empSnap.data()?.email || null;
+        } catch (_) {}
       }
+
+      await notifyInterestExpressed({
+        app:            appState,
+        candidateName:  profile.full_name || null,
+        jobTitle:       job.title || job.co || 'this role',
+        companyName:    job.co || job.companyName || 'the company',
+        candidateEmail: profile.email || null,
+        employerEmail,
+      });
 
       showToast(`Application submitted to ${job?.co || 'Company'} ✓`, 'success');
     } catch (err) {
@@ -616,6 +641,7 @@ export default function CandMatches() {
             applied={!!applied[selected.id]}
             onInterest={() => handleInterest(selected.id)}
             onApply={() => handleApply(selected.id)}
+            candidate={candidate}
           />
         )}
       </div>

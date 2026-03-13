@@ -18,19 +18,16 @@
 import { calcOverallMatchScore, getArchetype, getDnaLabel, DNA_DIMENSIONS } from './dnaEngine';
 
 // ─────────────────────────────────────────────────────────────────
-//  DEFAULT CANDIDATE  (used until Supabase profile loads)
+//  DEFAULT CANDIDATE  (neutral baseline for scoring only — no personal data)
+//  Do NOT use this for display. Gate UI on profile !== null instead.
 //  DNA: [energy, decision, feedback, rhythm, autonomy, risk, growth]
 // ─────────────────────────────────────────────────────────────────
 export const DEFAULT_CANDIDATE = {
-  id: 'self',
-  name: 'Jordan Mitchell',
-  title: 'Senior Product Manager',
-  location: 'London',
-  salaryMin: 90,
-  salaryMax: 140,
-  skills: ['Product Management', 'Fintech', 'Payments', 'SQL', 'OKRs', 'Roadmapping', 'B2B SaaS', 'Agile', 'Stakeholder management'],
-  dna: [62, 22, 42, 30, 55, 60, 48],
-  //      energy  decision  feedback  rhythm  autonomy  risk  growth
+  id:        'self',
+  dna:       [50, 50, 50, 50, 50, 50, 50],
+  skills:    [],
+  salaryMin: 0,
+  salaryMax: 999,
 };
 
 // ─────────────────────────────────────────────────────────────────

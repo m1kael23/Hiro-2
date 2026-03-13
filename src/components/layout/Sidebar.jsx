@@ -341,15 +341,15 @@ export default function Sidebar() {
   };
 
   const user = isEmployer
-    ? { 
-        initials: getInitials(profile?.full_name || 'Jamie Donovan'), 
-        name: profile?.full_name || 'Jamie Donovan',   
-        role: profile?.job_title || 'Head of Talent' 
+    ? {
+        initials: getInitials(profile?.full_name || profile?.company_name || '?'),
+        name: profile?.full_name || profile?.company_name || 'Your account',
+        role: profile?.job_title || 'Employer',
       }
-    : { 
-        initials: getInitials(profile?.full_name || 'Jordan Mitchell'), 
-        name: profile?.full_name || 'Jordan Mitchell', 
-        role: profile?.job_title || 'Senior PM' 
+    : {
+        initials: getInitials(profile?.full_name || '?'),
+        name: profile?.full_name || 'Your account',
+        role: profile?.job_title || 'Candidate',
       };
 
   const settingsRoute = isEmployer ? 'emp-settings' : 'cand-settings';

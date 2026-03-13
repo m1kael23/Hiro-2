@@ -62,6 +62,12 @@ export default function EmpDashboard() {
   const totalApps  = Object.values(pipeline).reduce((a,b) => a+b, 0);
   const weekNum    = Math.ceil((new Date() - new Date(new Date().getFullYear(), 0, 1)) / 604800000);
 
+  // Compute real metrics from Firestore pipeline data
+  const respondedApps = pipeline.shortlist + pipeline.interview + pipeline.final + pipeline.offer;
+  const responseRate  = totalApps > 0 ? Math.round((respondedApps / totalApps) * 100) : null;
+  // Hiro Score: simple composite (response rate * 0.10 capped at 10)
+  const hiroScore     = responseRate != null ? Math.min(10, (responseRate / 10)).toFixed(1) : null;
+
   return (
     <div className="view-panel">
       <div className="scroll">
@@ -90,16 +96,18 @@ export default function EmpDashboard() {
             <div>
               <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.18em', textTransform: 'uppercase', color: 'rgba(139,92,246,0.8)', marginBottom: 4 }}>Hiro Score™</div>
               <div style={{ fontFamily: 'Manrope', fontSize: 36, fontWeight: 800, color: '#fff', lineHeight: 1 }}>
-                8.7<span style={{ fontSize: 18, color: 'rgba(255,255,255,0.4)' }}>/10</span>
+                {hiroScore ?? '—'}<span style={{ fontSize: 18, color: 'rgba(255,255,255,0.4)' }}>/10</span>
               </div>
-              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginTop: 4 }}>Top 14% of employers on Hiro</div>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginTop: 4 }}>
+                {hiroScore ? `Based on ${totalApps} application${totalApps !== 1 ? 's' : ''}` : 'Unlocks after first application'}
+              </div>
             </div>
             <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
               {[
-                { label: 'Response rate', val: '94%',  color: 'var(--green)' },
-                { label: 'Avg process',   val: '14d',  color: 'var(--cyan)'  },
-                { label: 'Offer accept',  val: '88%',  color: '#a78bfa'      },
-                { label: 'Candidate NPS', val: '72',   color: 'var(--amber)' },
+                { label: 'Response rate', val: responseRate != null ? `${responseRate}%` : '—', color: responseRate != null ? (responseRate >= 80 ? 'var(--green)' : responseRate >= 50 ? 'var(--amber)' : 'var(--red)') : 'var(--text3)' },
+                { label: 'In interview',  val: loading ? '…' : String(pipeline.interview + pipeline.final), color: 'var(--cyan)'  },
+                { label: 'Offers out',    val: loading ? '…' : String(pipeline.offer),   color: '#a78bfa'      },
+                { label: 'Mutual matches',val: loading ? '…' : String(mutualCount),      color: 'var(--amber)' },
               ].map(s => (
                 <div key={s.label} style={{ textAlign: 'center', padding: '10px', background: 'rgba(255,255,255,0.04)', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)' }}>
                   <div style={{ fontFamily: 'Manrope', fontSize: 18, fontWeight: 800, color: s.color }}>{s.val}</div>
@@ -220,19 +228,26 @@ export default function EmpDashboard() {
                 <div className="card-title" style={{ marginBottom:0, color:'#f9a8d4' }}>🧬 Team DNA health</div>
                 <button className="btn btn-sm" style={{ background:'rgba(236,72,153,0.1)', border:'1px solid rgba(236,72,153,0.3)', color:'#f9a8d4', fontSize:11 }} onClick={() => navigate('emp-team-dna')}>View →</button>
               </div>
-              {[
-                { label:'Collaboration', val:72, color:'#a78bfa'       },
-                { label:'Data-driven',   val:85, color:'var(--cyan)'   },
-                { label:'Async first',   val:68, color:'var(--green)'  },
-              ].map(d => (
-                <div key={d.label} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:7, fontSize:12 }}>
-                  <span style={{ color:'var(--text2)', width:100, flexShrink:0 }}>{d.label}</span>
-                  <div style={{ flex:1, height:4, background:'rgba(255,255,255,0.08)', borderRadius:2 }}>
-                    <div style={{ width:`${d.val}%`, height:'100%', background:d.color, borderRadius:2 }} />
+              {profile?.team_dna && Array.isArray(profile.team_dna) ? (
+                [
+                  { label:'Collaboration', val: Math.round(profile.team_dna[0] ?? 50), color:'#a78bfa' },
+                  { label:'Data-driven',   val: Math.round(profile.team_dna[1] ?? 50), color:'var(--cyan)' },
+                  { label:'Async first',   val: Math.round(profile.team_dna[3] ?? 50), color:'var(--green)' },
+                ].map(d => (
+                  <div key={d.label} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:7, fontSize:12 }}>
+                    <span style={{ color:'var(--text2)', width:100, flexShrink:0 }}>{d.label}</span>
+                    <div style={{ flex:1, height:4, background:'rgba(255,255,255,0.08)', borderRadius:2 }}>
+                      <div style={{ width:`${d.val}%`, height:'100%', background:d.color, borderRadius:2 }} />
+                    </div>
+                    <span style={{ color:'var(--text3)', fontSize:11, width:30, textAlign:'right' }}>{d.val}%</span>
                   </div>
-                  <span style={{ color:'var(--text3)', fontSize:11, width:30, textAlign:'right' }}>{d.val}%</span>
+                ))
+              ) : (
+                <div style={{ textAlign:'center', padding:'12px 0' }}>
+                  <div style={{ fontSize:12, color:'var(--text3)', marginBottom:8 }}>Map your team DNA to unlock health metrics</div>
+                  <button className="btn btn-sm" style={{ background:'rgba(236,72,153,0.1)', border:'1px solid rgba(236,72,153,0.3)', color:'#f9a8d4', fontSize:11 }} onClick={() => navigate('emp-team-dna')}>Set up Team DNA →</button>
                 </div>
-              ))}
+              )}
             </div>
           </div>
         </div>

@@ -396,6 +396,7 @@ function RightPanel({
 ───────────────────────────────────────────── */
 export default function OnboardingView() {
   const { createProfile } = useAuth();
+  const matchTriggeredRef = useRef(false);
 
   const [phase,       setPhase]       = useState('role');
   const [mode,        setMode]        = useState(null);
@@ -623,8 +624,9 @@ export default function OnboardingView() {
       const { data: newProfile, error: err } = await createProfile(mode, fullName, additionalData);
       if (err) { setError(err.message); setSubmitting(false); return; }
 
-      // If candidate, fan out match scores against all live jobs immediately
-      if (mode === 'candidate' && additionalData.dna && newProfile?.id) {
+      // Fan out match scores once after onboarding completes — guard prevents double-fire
+      if (mode === 'candidate' && additionalData.dna && newProfile?.id && !matchTriggeredRef.current) {
+        matchTriggeredRef.current = true;
         setTimeout(() => {
           fanOutCandidateMatches({ ...additionalData, id: newProfile.id }).catch(e =>
             console.warn('[MatchEngine] onboarding fan-out error:', e)

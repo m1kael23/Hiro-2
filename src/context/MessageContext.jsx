@@ -31,6 +31,7 @@ import { notifyNewMessage } from '../services/notificationService';
 
 const MessageContext = createContext({
   threads:        {},
+  threadsLoading: true,
   activeMessages: [],
   unreadCount:    0,
   activeThreadId: null,
@@ -42,7 +43,7 @@ const MessageContext = createContext({
   partnerTyping:  {},
 });
 
-/* ─── Demo threads ─────────────────────────────────────────────── */
+/* ─── Demo threads (fallback when user has no Firestore threads) ── */
 const DEMO_THREADS = {
   monzo: {
     id: 'monzo', emoji: '🏦', name: 'Monzo · Sarah', jobTitle: 'Sr PM',
@@ -64,9 +65,9 @@ const DEMO_THREADS = {
 
 const DEMO_MESSAGES = {
   monzo: [
-    { id: 'd1', from: 'them', senderId: 'monzo',     avatar: '🏦', text: 'Hi! 👋 We loved your profile — your Work DNA fills exactly the gap we have. Free Thursday or Friday?', time: 'Sarah · 2h ago' },
-    { id: 'd2', from: 'me',   senderId: 'me',                      text: 'Thursday 2–5pm GMT works perfectly. Really excited about this one.', time: 'You · 1h ago' },
-    { id: 'd3', from: 'them', senderId: 'monzo',     avatar: '🏦', text: 'Perfect! Calendar invite sent for Thu 3pm GMT. Casual chat — no formal prep needed.', time: 'Sarah · 45m ago' },
+    { id: 'd1', from: 'them', senderId: 'monzo',  avatar: '🏦', text: 'Hi! 👋 We loved your profile — your Work DNA fills exactly the gap we have. Free Thursday or Friday?', time: 'Sarah · 2h ago' },
+    { id: 'd2', from: 'me',   senderId: 'me',               text: 'Thursday 2–5pm GMT works perfectly. Really excited about this one.', time: 'You · 1h ago' },
+    { id: 'd3', from: 'them', senderId: 'monzo',  avatar: '🏦', text: 'Perfect! Calendar invite sent for Thu 3pm GMT. Casual chat — no formal prep needed.', time: 'Sarah · 45m ago' },
     { id: 'd4', type: 'event', text: '📅 Interview scheduled — Thu 3pm GMT', color: 'var(--green)', bg: 'rgba(34,197,94,.07)', border: 'rgba(34,197,94,.2)' },
   ],
   synthesia: [
@@ -117,6 +118,7 @@ export function MessageProvider({ children }) {
     setActiveThreadId(threadId);
     setPartnerTyping(p => ({ ...p, [threadId]: false }));
 
+    // Demo thread — use static messages, no Firestore sub needed
     if (DEMO_THREADS[threadId]) {
       setActiveMessages(DEMO_MESSAGES[threadId] || []);
       return;
@@ -168,7 +170,7 @@ export function MessageProvider({ children }) {
 
   /* ── 3. Typing indicator ─────────────────────────────────────── */
   const setTyping = useCallback(async (threadId, isTyping) => {
-    if (!profile?.id || !threadId || DEMO_THREADS[threadId]) return;
+    if (!profile?.id || !threadId) return;
     try {
       await updateDoc(doc(db, 'threads', threadId), { [`typing.${profile.id}`]: isTyping });
     } catch (e) { /* non-critical */ }
@@ -178,9 +180,12 @@ export function MessageProvider({ children }) {
   const sendMessage = useCallback(async (threadId, text) => {
     if (!text?.trim()) return;
 
-    // Demo thread — optimistic only
+    // Demo thread — optimistic only, no Firestore write
     if (DEMO_THREADS[threadId]) {
-      setActiveMessages(p => [...p, { id: `local-${Date.now()}`, from: 'me', senderId: 'me', text: text.trim(), time: 'just now' }]);
+      setActiveMessages(p => [...p, {
+        id: `local-${Date.now()}`, from: 'me', senderId: 'me',
+        text: text.trim(), time: 'just now',
+      }]);
       return;
     }
 
@@ -226,7 +231,7 @@ export function MessageProvider({ children }) {
 
   /* ── 5. Mark thread as read ──────────────────────────────────── */
   const markAsRead = useCallback(async (threadId) => {
-    if (!profile?.id || !threadId || DEMO_THREADS[threadId]) return;
+    if (!profile?.id || !threadId) return;
     try {
       await updateDoc(doc(db, 'threads', threadId), { [`unreadBy.${profile.id}`]: false });
     } catch (e) { /* non-critical */ }
@@ -266,11 +271,11 @@ export function MessageProvider({ children }) {
     return ref.id;
   }, [profile?.id]);
 
-  /* ── Derived: threads ────────────────────────────────────────── */
+  /* ── Derived: threads visible to UI ──────────────────────────── */
   const threads = useMemo(() => {
-    if (firestoreThreads === null)             return DEMO_THREADS;
-    if (Object.keys(firestoreThreads).length) return firestoreThreads;
-    return DEMO_THREADS;
+    if (firestoreThreads === null)              return DEMO_THREADS; // still loading
+    if (Object.keys(firestoreThreads).length)  return firestoreThreads;
+    return DEMO_THREADS;                                             // empty → show demo
   }, [firestoreThreads]);
 
   /* ── Derived: unread count ───────────────────────────────────── */
@@ -281,10 +286,10 @@ export function MessageProvider({ children }) {
       return false;
     }).length,
   [threads, profile?.id]);
-
+const threadsLoading = firestoreThreads === null;
   return (
     <MessageContext.Provider value={{
-      threads, activeMessages, unreadCount, activeThreadId,
+      threads, threadsLoading, activeMessages, unreadCount, activeThreadId,
       loadThread, sendMessage, markAsRead, createThread,
       setTyping, partnerTyping,
     }}>
